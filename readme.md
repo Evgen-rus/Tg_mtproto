@@ -1,52 +1,70 @@
-Ок, делаем **MTProto-вариант (самый стабильный)** на **Telethon**: в терминале пишешь → скрипт отправляет `@Neyroosint_test_bot` → ждёт ответ → печатает.
+# Telegram MTProto MVP (Telethon) — терминал -> бот -> ответ
 
-Telethon работает как клиент Telegram (под твоим аккаунтом) и умеет `send_message` и “разговоры” (`conversation`). ([docs.telethon.dev][1])
-https://telethon-01914.readthedocs.io/en/latest/extra/basic/getting-started.html
----
+Скрипт работает как Telegram-клиент под моим аккаунтом:
+пишу сообщение в терминале -> отправляется боту `@***` -> жду ответ -> печатаю в терминал.
 
-## 1) Что нужно один раз подготовить
+## Как получить `API_ID` и `API_HASH` (для Telethon / MTProto)
 
-1. Получи `api_id` и `api_hash` на `my.telegram.org` (это обязательно для MTProto-клиентов). ([telethon-01914.readthedocs.io][2])
-2. Установи Telethon:
+1) Открой Telegram Core и залогинься своим номером:
+   https://my.telegram.org  
 
+2) Перейди в раздел **API development tools**. 
+
+3) Нажми **Create new application** (если формы ещё нет — она появится сама).
+   Заполни поля (достаточно App title и Short name; URL можно не указывать). 
+
+4) После создания на странице появятся значения:
+   - `api_id`
+   - `api_hash`
+   Скопируй их в `.env`. :contentReference[oaicite:3]{index=3}
+
+Важно: `api_hash` — секрет, не публикуй и не коммить в git.
+
+
+## Установка
 ```bash
-pip install -U telethon
+pip install -r requirements.txt
+````
+
+## Создай файл .env
+
+```env
+API_ID=123456
+API_HASH=YOUR_HASH
+SESSION_NAME=tg_user
+BOT=@Neyroosint_test_bot
 ```
 
-([docs.telethon.dev][3])
-
----
-
-## 2) Скрипт `tg_mtproto_mvp.py`
-
-
----
-
-## 3) Запуск
+## Запуск
 
 ```bash
 python tg_mtproto_mvp.py
 ```
 
-При первом запуске Telethon попросит:
+## Первый запуск
+
+Telethon попросит:
 
 * номер телефона
 * код из Telegram
 * (если включено) пароль 2FA
 
----
+После этого рядом появится файл сессии: `<SESSION_NAME>.session`
 
-## 4) Что добавить в `.gitignore` (важно)
+## Управление
+
+* Пиши текст в терминале — увидишь ответ строкой ниже
+* Выход: `/exit`
+
+## .gitignore (обязательно)
 
 ```gitignore
+.env
 *.session
 *.session-journal
 ```
 
----
+## Примечания
 
-Если бот отвечает **несколькими сообщениями подряд** или через **кнопки/меню**, скажи — я расширю MVP: будем собирать все ответы за окно времени и уметь “нажимать” кнопки.
-
-[1]: https://docs.telethon.dev/en/stable/modules/client.html?utm_source=chatgpt.com "TelegramClient — Telethon 1.42.0 documentation"
-[2]: https://telethon-01914.readthedocs.io/en/latest/extra/basic/getting-started.html?utm_source=chatgpt.com "Getting Started — Telethon 0.19.1 documentation"
-[3]: https://docs.telethon.dev/en/stable/basic/installation.html?utm_source=chatgpt.com "Installation — Telethon 1.42.0 documentation"
+* Это MTProto (не bot token), работает от твоего аккаунта.
+* Не спамь: соблюдай лимиты Telegram, иначе могут быть ограничения.
