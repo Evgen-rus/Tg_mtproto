@@ -29,3 +29,22 @@ Thumbs.db
 
 *.session
 *.session-journal
+
+# SQLite DB (результаты запросов) — НЕ коммитим
+tg_results.db
+tg_results.db-wal
+tg_results.db-shm
+tg_results.sqlite3
+tg_results.sqlite3-wal
+tg_results.sqlite3-shm
+
+# На будущее: любые локальные SQLite файлы
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
