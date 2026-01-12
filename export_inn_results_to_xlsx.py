@@ -118,20 +118,11 @@ def export_to_xlsx(
         "Расходы 2024",
         "Уставный капитал",
         "Адрес",
-        "Учредители (JSON)",
-    ]
-    if include_founders_pretty:
-        # По просьбе: название этой колонки оставляем как есть.
-        headers.append("founders_pretty")
-    headers += [
-        "ID исходного запроса",
+        "Учредители",
         "Исходный запрос",
-        "Время исходного запроса (UTC)",
         "Создано (UTC)",
-        "Обновлено (UTC)",
+        "raw_text",
     ]
-    # По просьбе: raw_text выгружаем всегда и оставляем название колонки как есть.
-    headers.append("raw_text")
 
     ws.append(headers)
 
@@ -152,18 +143,11 @@ def export_to_xlsx(
             row["expenses_2024"],
             row["authorized_capital"],
             row["address"],
-            founders_json,
-        ]
-        if include_founders_pretty:
-            values.append(_founders_pretty(founders_json))
-        values += [
-            row["source_query_id"],
+            _founders_pretty(founders_json),
             row["source_query_text"],
-            row["source_query_created_at"],
             row["created_at"],
-            row["updated_at"],
+            row["raw_text"],
         ]
-        values.append(row["raw_text"])
         ws.append(values)
 
     # Оформление
