@@ -48,3 +48,6 @@ tg_results.sqlite3-shm
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+
+*.xlsx
+*.log
