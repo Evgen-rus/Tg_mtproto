@@ -90,7 +90,7 @@ def autosize_columns(ws) -> None:
             s = str(v)
             if len(s) > max_len:
                 max_len = len(s)
-        ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 60)
+        ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 30)
 
 
 def export_to_xlsx(
@@ -161,14 +161,16 @@ def export_to_xlsx(
             ws.cell(row=r, column=c).alignment = Alignment(vertical="top", wrap_text=True)
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
     autosize_columns(ws)
+
+    # Ограничить высоту строк (особенно для raw_text) до ~5 строк текста (~100pt)
+    for row_idx in range(2, ws.max_row + 1):
+        ws.row_dimensions[row_idx].height = 100
 
     wb.save(out_path)
 
 
 def main() -> int:
-    # Упрощённый режим: без аргументов командной строки.
     # DB_PATH можно задать в .env (как и в 2_mtproto.py).
     db_path = os.getenv("DB_PATH", "tg_results.db").strip()
     out_path = _default_out_path()
