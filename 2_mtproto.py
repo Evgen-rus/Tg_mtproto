@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 
@@ -10,6 +11,18 @@ from database.sqlite_db import connect, init_schema
 from utils.inn_parser import parse_inn_result_text
 
 load_dotenv()
+
+
+def setup_logging() -> logging.Logger:
+    level_raw = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_raw, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    # Telethon довольно шумный — оставим его логи на WARNING.
+    logging.getLogger("telethon").setLevel(logging.WARNING)
+    return logging.getLogger("mtproto")
 
 
 def get_required_env(name: str) -> str:
@@ -55,6 +68,7 @@ def print_incoming(prefix: str, msg) -> None:
 
 
 async def main() -> None:
+    log = setup_logging()
     api_id, api_hash, session_name, bot_username = load_config()
     client = TelegramClient(session_name, api_id, api_hash)
 
@@ -62,6 +76,7 @@ async def main() -> None:
     db_path = os.getenv("DB_PATH", "tg_results.db").strip()
     conn = connect(db_path)
     init_schema(conn)
+    log.info("DB initialized: %s", db_path)
 
     # Сопоставляем ИНН из запроса "/inn 123..." -> id записи в source_queries,
     # чтобы затем проставить source_query_id в inn_results.
@@ -84,12 +99,14 @@ async def main() -> None:
             text = event.message.text or ""
             # Пишем в БД только финальный ответ, когда есть ИНН.
             if "ИНН" not in text:
+                log.debug("Skip edited message: no INN marker")
                 return
 
             try:
                 parsed = parse_inn_result_text(text)
                 inn = parsed.get("inn")
                 if not inn:
+                    log.debug("Skip edited message: INN not parsed")
                     return
 
                 source_query_id = pending_inn_queries.get(inn)
@@ -97,11 +114,33 @@ async def main() -> None:
                     # Если почему-то не нашли исходный запрос — всё равно сохраним,
                     # создав "служебную" запись источника.
                     source_query_id = insert_source_query(conn, query_text="(auto) ответ без сопоставленного запроса")
+                    log.warning(
+                        "No source query matched for inn=%s. Created auto source_query_id=%s",
+                        inn,
+                        source_query_id,
+                    )
+                else:
+                    log.info("Matched source_query_id=%s for inn=%s", source_query_id, inn)
 
                 kwargs = build_upsert_kwargs(parsed)
+
+                # Логируем только распарсенные поля (без полного raw_text, чтобы не засорять лог).
+                raw_text_len = len(kwargs.get("raw_text") or "")
+                log_fields = {k: v for k, v in kwargs.items() if k != "raw_text"}
+                missing_fields = sorted([k for k, v in log_fields.items() if v is None])
+                log.info(
+                    "Parsed fields for inn=%s (raw_text_len=%s): %s",
+                    inn,
+                    raw_text_len,
+                    log_fields,
+                )
+                if missing_fields:
+                    log.info("Missing (None) fields for inn=%s: %s", inn, missing_fields)
                 upsert_inn_result(conn, source_query_id=source_query_id, **kwargs)
+                log.info("Saved to DB: inn=%s source_query_id=%s", inn, source_query_id)
             except Exception as exc:
                 # Важно: не падаем из-за БД/парсинга.
+                log.exception("Failed to save edited message to DB: %s", exc)
                 print(f"\n[warn] Не удалось сохранить результат в БД: {exc}")
                 print("> ", end="", flush=True)
 
@@ -124,6 +163,9 @@ async def main() -> None:
                     inn = m.group(1)
                     qid = insert_source_query(conn, query_text=text)
                     pending_inn_queries[inn] = qid
+                    log.info("Source query logged: inn=%s source_query_id=%s", inn, qid)
+                else:
+                    log.debug("Command starts with /inn but INN not matched: %r", text)
 
             await client.send_message(bot_entity, text)
 

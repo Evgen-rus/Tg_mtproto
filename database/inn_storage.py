@@ -27,6 +27,7 @@ def upsert_inn_result(
     company_status: str | None = None,
     director_name: str | None = None,
     director_inn: str | None = None,
+    employees_count: int | None = None,
     revenue_2024: int | None = None,
     income_2024: int | None = None,
     expenses_2024: int | None = None,
@@ -47,6 +48,7 @@ def upsert_inn_result(
             company_status,
             director_name,
             director_inn,
+            employees_count,
             revenue_2024,
             income_2024,
             expenses_2024,
@@ -59,7 +61,7 @@ def upsert_inn_result(
             updated_at
         )
         VALUES(
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         ON CONFLICT(inn) DO UPDATE SET
             ogrn=excluded.ogrn,
@@ -69,6 +71,7 @@ def upsert_inn_result(
             company_status=excluded.company_status,
             director_name=excluded.director_name,
             director_inn=excluded.director_inn,
+            employees_count=excluded.employees_count,
             revenue_2024=excluded.revenue_2024,
             income_2024=excluded.income_2024,
             expenses_2024=excluded.expenses_2024,
@@ -89,6 +92,7 @@ def upsert_inn_result(
             company_status,
             director_name,
             director_inn,
+            employees_count,
             revenue_2024,
             income_2024,
             expenses_2024,
@@ -120,6 +124,7 @@ def build_upsert_kwargs(parsed: dict[str, Any]) -> dict[str, Any]:
         "company_status": parsed.get("company_status"),
         "director_name": parsed.get("director_name"),
         "director_inn": parsed.get("director_inn"),
+        "employees_count": parsed.get("employees_count"),
         "revenue_2024": parsed.get("revenue_2024"),
         "income_2024": parsed.get("income_2024"),
         "expenses_2024": parsed.get("expenses_2024"),

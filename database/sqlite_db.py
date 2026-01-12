@@ -41,6 +41,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             company_status TEXT,
             director_name TEXT,
             director_inn TEXT,
+            employees_count INTEGER,
             revenue_2024 INTEGER,
             income_2024 INTEGER,
             expenses_2024 INTEGER,

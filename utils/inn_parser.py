@@ -39,6 +39,7 @@ def parse_inn_result_text(text: str) -> dict[str, Any]:
         "company_status": None,
         "director_name": None,
         "director_inn": None,
+        "employees_count": None,
         "revenue_2024": None,
         "income_2024": None,
         "expenses_2024": None,
@@ -66,8 +67,11 @@ def parse_inn_result_text(text: str) -> dict[str, Any]:
     if m:
         out["ogrn"] = m.group(1)
 
-    # Дата регистрации: "24.01.2013 (4736 дней назад)" -> берём только дату.
-    m = re.search(r"Дата регистрации:\s*([0-9]{2}\.[0-9]{2}\.[0-9]{4})", text)
+    # Дата регистрации: "**Дата регистрации:** 24.01.2013 (4736 дней назад)" -> берём только дату.
+    # Важно: в тексте часто есть Markdown "**" вокруг "Дата регистрации:".
+    m = re.search(r"Дата регистрации:\*+\s*([0-9]{2}\.[0-9]{2}\.[0-9]{4})", text)
+    if not m:
+        m = re.search(r"Дата регистрации:\s*([0-9]{2}\.[0-9]{2}\.[0-9]{4})", text)
     if m:
         out["reg_date"] = m.group(1)
 
@@ -80,6 +84,11 @@ def parse_inn_result_text(text: str) -> dict[str, Any]:
     if m:
         out["director_name"] = m.group(1).strip()
         out["director_inn"] = m.group(2).strip()
+
+    # Сотрудников: "**Сотрудников:** 10"
+    m = re.search(r"\*\*Сотрудников:\*\*\s*([0-9]+)", text)
+    if m:
+        out["employees_count"] = int(m.group(1))
 
     # Финансовые показатели (2024):
     out["revenue_2024"] = _find_money_after("**Выручка:**", text)
