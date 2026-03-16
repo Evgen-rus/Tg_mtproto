@@ -9,6 +9,7 @@
 - `qr_login.py` - отдельный вход в Telegram через QR для создания сессии
 - `get_director_phone.py` - сценарий для ООО / АО / ЗАО через Telegram-кнопки
 - `get_ip_phone.py` - сценарий для ИП через ссылку на web-отчёт
+- `get_phone_summary.py` - сценарий для краткой сводки по номеру телефона
 - `.env` - настройки Telegram и имя бота
 - `results.csv` - файл с результатами, создаётся автоматически
 
@@ -90,6 +91,19 @@ python get_ip_phone.py
 ```env
 PLAYWRIGHT_HEADLESS=0
 ```
+
+### 4. Для краткой сводки по телефону запускать отдельный скрипт
+
+```bash
+python get_phone_summary.py
+```
+
+Скрипт:
+
+1. отправит номер телефона боту
+2. дождётся краткой сводки
+3. вытащит основные поля
+4. сохранит результат в `phone_summary_results.csv` и `phone_summary_results.xlsx`
 
 Выход:
 
