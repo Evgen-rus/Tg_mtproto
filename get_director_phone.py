@@ -21,6 +21,7 @@ FIO_RE = re.compile(r"\bФИО\s*:\s*([^\n]+)")
 PHONE_RE = re.compile(r"\bТелефон\s*:\s*([+0-9][0-9()\-\s]{8,})")
 EMAIL_RE = re.compile(r"\bEmail\s*:\s*([^\s\n]+)", re.IGNORECASE)
 PERSON_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{10}|\d{12})\b")
+NOT_FOUND_RE = re.compile(r"к сожалению,\s*по данному запросу ничего не найдено", re.IGNORECASE)
 
 CLICK_DELAY_SECONDS = 3
 CLICK_TIMEOUT_SECONDS = 12
@@ -28,6 +29,8 @@ QUERY_TIMEOUT_SECONDS = 180
 MAX_DEPTH = 5
 RESULT_FIELDNAMES = [
     "requested_inn",
+    "result_status",
+    "status_message",
     "source_company_inn",
     "source_company_name",
     "last_company_inn",
@@ -72,8 +75,24 @@ class QueryState:
     source_company: CompanyCard | None = None
     last_company: CompanyCard | None = None
     person: PersonCard | None = None
+    result_status: str = "pending"
+    status_message: str | None = None
     error: str | None = None
     seen_cards: set[str] = field(default_factory=set)
+
+
+def set_failure(
+    state: QueryState,
+    *,
+    status: str,
+    message: str,
+    error: str | None = None,
+) -> None:
+    if state.result_status in {"found", "not_found"}:
+        return
+    state.result_status = status
+    state.status_message = message
+    state.error = error or message
 
 
 def setup_logging() -> logging.Logger:
@@ -184,6 +203,12 @@ def parse_person_card(text: str) -> PersonCard | None:
     )
 
 
+def parse_not_found_message(text: str) -> str | None:
+    if NOT_FOUND_RE.search(text):
+        return text.strip()
+    return None
+
+
 def normalize_inn(user_input: str) -> str | None:
     match = re.search(r"(\d{10}|\d{12})", user_input)
     if not match:
@@ -212,24 +237,23 @@ def should_skip_button(button_text: str) -> bool:
 
 
 def build_result_row(state: QueryState) -> dict[str, str | None]:
-    if not state.person:
-        raise ValueError("Cannot save result without person card")
-
     source_company = state.source_company or CompanyCard(company_inn=state.requested_inn)
     last_company = state.last_company
 
     return {
         "requested_inn": state.requested_inn,
+        "result_status": state.result_status,
+        "status_message": state.status_message,
         "source_company_inn": source_company.company_inn,
         "source_company_name": source_company.company_name,
         "last_company_inn": last_company.company_inn if last_company else None,
         "last_company_name": last_company.company_name if last_company else None,
         "director_name": last_company.director_name if last_company else None,
         "director_inn": last_company.director_inn if last_company else None,
-        "person_fio": state.person.fio,
-        "phone": state.person.phone,
-        "email": state.person.email,
-        "person_inn": state.person.inn,
+        "person_fio": state.person.fio if state.person else None,
+        "phone": state.person.phone if state.person else None,
+        "email": state.person.email if state.person else None,
+        "person_inn": state.person.inn if state.person else None,
     }
 
 
@@ -294,6 +318,11 @@ async def wait_for_next_useful_message(
             return None, None, None
 
         text = get_message_text(message)
+        not_found_message = parse_not_found_message(text)
+        if not_found_message:
+            log.info("Received not-found response for current query")
+            return "not_found", message, not_found_message
+
         person = parse_person_card(text)
         if person:
             log.info("Received person card: fio=%s phone=%s", person.fio, person.phone)
@@ -315,7 +344,11 @@ async def explore_message(
     depth: int,
 ) -> bool:
     if depth > MAX_DEPTH:
-        state.error = f"Max depth exceeded ({MAX_DEPTH})"
+        set_failure(
+            state,
+            status="max_depth_exceeded",
+            message=f"Превышена максимальная глубина обхода ({MAX_DEPTH})",
+        )
         return False
 
     text = get_message_text(message)
@@ -426,20 +459,49 @@ async def resolve_query(state: QueryState, log: logging.Logger) -> bool:
         timeout_seconds=CLICK_TIMEOUT_SECONDS,
     )
     if kind is None:
-        state.error = "No useful response after /inn"
+        set_failure(
+            state,
+            status="no_response",
+            message="После /inn бот не вернул полезный ответ",
+        )
+        return False
+
+    if kind == "not_found":
+        not_found_message = payload
+        assert isinstance(not_found_message, str)
+        set_failure(
+            state,
+            status="not_found",
+            message=not_found_message,
+            error="По этому ИНН бот ничего не нашёл",
+        )
         return False
 
     if kind == "person":
         person = payload
         assert isinstance(person, PersonCard)
         if not person.phone:
-            state.error = "Person card received without phone"
+            set_failure(
+                state,
+                status="phone_not_found",
+                message="Карточка физлица получена, но телефон отсутствует",
+            )
             return False
         state.person = person
+        state.result_status = "found"
         return True
 
     assert message is not None
-    return await explore_message(message, state, log, depth=0)
+    found = await explore_message(message, state, log, depth=0)
+    if found:
+        state.result_status = "found"
+    elif state.result_status == "pending":
+        set_failure(
+            state,
+            status="phone_not_found",
+            message="Телефон не найден после обхода всех кнопок",
+        )
+    return found
 
 
 async def main() -> None:
@@ -498,12 +560,31 @@ async def main() -> None:
             try:
                 found = await asyncio.wait_for(resolve_query(current_query, log), timeout=QUERY_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                print(f"[warn] Timeout while resolving INN {inn}")
+                set_failure(
+                    current_query,
+                    status="timeout",
+                    message=f"Превышено время ожидания результата ({QUERY_TIMEOUT_SECONDS} сек)",
+                )
+                append_result(results_csv, results_xlsx, current_query)
+                print("\n[result]")
+                print(f"requested_inn: {current_query.requested_inn}")
+                print("status: timeout")
+                print(f"message: {current_query.status_message}")
+                print(f"saved_to: {results_csv}")
+                print(f"saved_to: {results_xlsx}")
+                print()
                 current_query = None
                 continue
 
             if not found:
-                print(f"[warn] {current_query.error or 'Phone not found'}")
+                append_result(results_csv, results_xlsx, current_query)
+                print("\n[result]")
+                print(f"requested_inn: {current_query.requested_inn}")
+                print(f"status: {current_query.result_status}")
+                print(f"message: {current_query.status_message or current_query.error or 'Unknown error'}")
+                print(f"saved_to: {results_csv}")
+                print(f"saved_to: {results_xlsx}")
+                print()
                 current_query = None
                 continue
 
