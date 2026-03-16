@@ -13,14 +13,14 @@ from telethon import TelegramClient, events
 
 load_dotenv()
 
-COMPANY_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{10}|\d{12})\b")
+COMPANY_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{12}|\d{10})\b")
 DIRECTOR_RE = re.compile(
     r"(?:Директор|Генеральный директор|Руководитель)\s*:\s*([^\n(]+?)(?:\s*\(ИНН\s*(\d{10,12})\))?(?:\n|$)"
 )
 FIO_RE = re.compile(r"\bФИО\s*:\s*([^\n]+)")
 PHONE_RE = re.compile(r"\bТелефон\s*:\s*([+0-9][0-9()\-\s]{8,})")
 EMAIL_RE = re.compile(r"\bEmail\s*:\s*([^\s\n]+)", re.IGNORECASE)
-PERSON_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{10}|\d{12})\b")
+PERSON_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{12}|\d{10})\b")
 NOT_FOUND_RE = re.compile(r"к сожалению,\s*по данному запросу ничего не найдено", re.IGNORECASE)
 
 CLICK_DELAY_SECONDS = 3
@@ -210,7 +210,7 @@ def parse_not_found_message(text: str) -> str | None:
 
 
 def normalize_inn(user_input: str) -> str | None:
-    match = re.search(r"(\d{10}|\d{12})", user_input)
+    match = re.search(r"\b(\d{12}|\d{10})\b", user_input)
     if not match:
         return None
     return match.group(1)
