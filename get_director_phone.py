@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from openpyxl import Workbook, load_workbook
 from telethon import TelegramClient, events
 
 load_dotenv()
@@ -25,6 +26,19 @@ CLICK_DELAY_SECONDS = 3
 CLICK_TIMEOUT_SECONDS = 12
 QUERY_TIMEOUT_SECONDS = 180
 MAX_DEPTH = 5
+RESULT_FIELDNAMES = [
+    "requested_inn",
+    "source_company_inn",
+    "source_company_name",
+    "last_company_inn",
+    "last_company_name",
+    "director_name",
+    "director_inn",
+    "person_fio",
+    "phone",
+    "email",
+    "person_inn",
+]
 
 
 @dataclass
@@ -80,13 +94,15 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def load_config() -> tuple[int, str, str, str, Path]:
+def load_config() -> tuple[int, str, str, str, Path, Path]:
     api_id = int(get_required_env("API_ID"))
     api_hash = get_required_env("API_HASH")
     session_name = get_required_env("SESSION_NAME")
     bot_username = get_required_env("BOT")
     results_csv = Path(os.getenv("RESULTS_CSV", "results.csv").strip() or "results.csv")
-    return api_id, api_hash, session_name, bot_username, results_csv
+    default_xlsx = results_csv.with_suffix(".xlsx")
+    results_xlsx = Path(os.getenv("RESULTS_XLSX", str(default_xlsx)).strip() or str(default_xlsx))
+    return api_id, api_hash, session_name, bot_username, results_csv, results_xlsx
 
 
 async def ainput(prompt: str) -> str:
@@ -195,49 +211,58 @@ def should_skip_button(button_text: str) -> bool:
     return normalized.startswith("комментарии")
 
 
-def append_result(results_csv: Path, state: QueryState) -> None:
+def build_result_row(state: QueryState) -> dict[str, str | None]:
     if not state.person:
-        return
+        raise ValueError("Cannot save result without person card")
 
     source_company = state.source_company or CompanyCard(company_inn=state.requested_inn)
     last_company = state.last_company
 
+    return {
+        "requested_inn": state.requested_inn,
+        "source_company_inn": source_company.company_inn,
+        "source_company_name": source_company.company_name,
+        "last_company_inn": last_company.company_inn if last_company else None,
+        "last_company_name": last_company.company_name if last_company else None,
+        "director_name": last_company.director_name if last_company else None,
+        "director_inn": last_company.director_inn if last_company else None,
+        "person_fio": state.person.fio,
+        "phone": state.person.phone,
+        "email": state.person.email,
+        "person_inn": state.person.inn,
+    }
+
+
+def append_result_csv(results_csv: Path, row: dict[str, str | None]) -> None:
     results_csv.parent.mkdir(parents=True, exist_ok=True)
     write_header = not results_csv.exists()
     with results_csv.open("a", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "requested_inn",
-                "source_company_inn",
-                "source_company_name",
-                "last_company_inn",
-                "last_company_name",
-                "director_name",
-                "director_inn",
-                "person_fio",
-                "phone",
-                "email",
-                "person_inn",
-            ],
-        )
+        writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDNAMES)
         if write_header:
             writer.writeheader()
-        writer.writerow(
-            {
-                "requested_inn": state.requested_inn,
-                "source_company_inn": source_company.company_inn,
-                "source_company_name": source_company.company_name,
-                "last_company_inn": last_company.company_inn if last_company else None,
-                "last_company_name": last_company.company_name if last_company else None,
-                "director_name": last_company.director_name if last_company else None,
-                "director_inn": last_company.director_inn if last_company else None,
-                "person_fio": state.person.fio,
-                "phone": state.person.phone,
-                "email": state.person.email,
-                "person_inn": state.person.inn,
-            }
-        )
+        writer.writerow(row)
+
+
+def append_result_xlsx(results_xlsx: Path, row: dict[str, str | None]) -> None:
+    results_xlsx.parent.mkdir(parents=True, exist_ok=True)
+
+    if results_xlsx.exists():
+        workbook = load_workbook(results_xlsx)
+        worksheet = workbook.active
+    else:
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "results"
+        worksheet.append(RESULT_FIELDNAMES)
+
+    worksheet.append([row.get(field) for field in RESULT_FIELDNAMES])
+    workbook.save(results_xlsx)
+
+
+def append_result(results_csv: Path, results_xlsx: Path, state: QueryState) -> None:
+    row = build_result_row(state)
+    append_result_csv(results_csv, row)
+    append_result_xlsx(results_xlsx, row)
 
 
 def drain_queue(state: QueryState) -> int:
@@ -419,7 +444,7 @@ async def resolve_query(state: QueryState, log: logging.Logger) -> bool:
 
 async def main() -> None:
     log = setup_logging()
-    api_id, api_hash, session_name, bot_username, results_csv = load_config()
+    api_id, api_hash, session_name, bot_username, results_csv, results_xlsx = load_config()
     client = TelegramClient(session_name, api_id, api_hash)
     current_query: QueryState | None = None
 
@@ -482,7 +507,7 @@ async def main() -> None:
                 current_query = None
                 continue
 
-            append_result(results_csv, current_query)
+            append_result(results_csv, results_xlsx, current_query)
 
             print("\n[result]")
             print(f"requested_inn: {current_query.requested_inn}")
@@ -494,6 +519,7 @@ async def main() -> None:
             print(f"phone: {current_query.person.phone or 'not found'}")
             print(f"email: {current_query.person.email or 'not found'}")
             print(f"saved_to: {results_csv}")
+            print(f"saved_to: {results_xlsx}")
             print()
 
             current_query = None
