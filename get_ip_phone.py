@@ -241,6 +241,12 @@ def normalize_phone(raw_phone: str | None) -> str | None:
     if not raw_phone:
         return None
     cleaned = re.sub(r"[^\d+]", "", raw_phone)
+    if cleaned.startswith("+7") and len(cleaned) > 12:
+        cleaned = cleaned[:12]
+    elif cleaned.startswith("7") and len(cleaned) > 11:
+        cleaned = cleaned[:11]
+    elif cleaned.startswith("8") and len(cleaned) > 11:
+        cleaned = cleaned[:11]
     return cleaned or None
 
 
@@ -295,7 +301,7 @@ def extract_first_person_line(summary_text: str) -> str | None:
 def clean_person_name(raw_line: str | None) -> str | None:
     if not raw_line:
         return None
-    line = re.sub(r"\s+\d+%$", "", raw_line).strip()
+    line = re.sub(r"\s+\d+(?:[.,]\d+)?%$", "", raw_line).strip()
     match = re.match(r"(.+?)(?:\s+\d{2}\.\d{2}\.\d{4})?$", line)
     if not match:
         return line
