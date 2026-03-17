@@ -589,6 +589,73 @@ async def resolve_query(
     return True
 
 
+async def run_single_query(
+    client: TelegramClient,
+    bot_entity,
+    inn: str,
+    *,
+    log: logging.Logger | None = None,
+    results_csv: Path | None = None,
+    results_xlsx: Path | None = None,
+    persist: bool = False,
+    echo: bool = True,
+    timeout_seconds: int = QUERY_TIMEOUT_SECONDS + 90,
+    headless: bool = True,
+    debug_dir: Path | None = None,
+) -> QueryState:
+    query_log = log or logging.getLogger("ip_phone")
+    report_debug_dir = debug_dir or Path("report_debug")
+    state = QueryState(requested_inn=inn)
+
+    async def handle_bot_message(event, prefix: str) -> None:
+        message = event.message
+        if echo:
+            print_incoming(prefix, message)
+        state.queue.put_nowait(message)
+
+    async def on_new_message(event):
+        await handle_bot_message(event, "<")
+
+    async def on_edited_message(event):
+        await handle_bot_message(event, "< [edit]")
+
+    new_message_builder = events.NewMessage(from_users=bot_entity)
+    edited_message_builder = events.MessageEdited(from_users=bot_entity)
+    client.add_event_handler(on_new_message, new_message_builder)
+    client.add_event_handler(on_edited_message, edited_message_builder)
+
+    try:
+        command = f"/inn {inn}"
+        if echo:
+            print(f"[you] {command}")
+        await client.send_message(bot_entity, command)
+
+        try:
+            found = await asyncio.wait_for(
+                resolve_query(state, query_log, headless=headless, debug_dir=report_debug_dir),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            set_failure(
+                state,
+                status="timeout",
+                message="Превышено время ожидания результата по ИП",
+            )
+        else:
+            if found and state.result_status == "pending":
+                state.result_status = "found"
+
+        if persist:
+            if results_csv is None or results_xlsx is None:
+                raise RuntimeError("results_csv/results_xlsx are required when persist=True")
+            append_result(results_csv, results_xlsx, state)
+
+        return state
+    finally:
+        client.remove_event_handler(on_new_message, new_message_builder)
+        client.remove_event_handler(on_edited_message, edited_message_builder)
+
+
 async def main() -> None:
     log = setup_logging()
     api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, headless, debug_dir = load_config()

@@ -128,3 +128,34 @@ python qr_login.py
 - телефон
 - email
 - ИНН физлица
+
+## Единый пайплайн по таблице
+
+Если есть входной `csv` или `xlsx`, где:
+
+- 1 столбец: название контрагента
+- 2 столбец: ИНН
+
+можно запускать общий оркестратор:
+
+```bash
+python run_pipeline.py input.xlsx
+```
+
+Логика такая:
+
+1. По названию определяется тип контрагента.
+2. Если в названии есть `ИП` или `Индивидуальный предприниматель`, запускается сценарий `get_ip_phone.py`.
+3. Иначе запускается сценарий `get_director_phone.py`.
+4. Если телефон найден, автоматически запускается `get_phone_summary.py`.
+5. Итог сохраняется в:
+   - `pipeline_results.csv`
+   - `pipeline_results.xlsx`
+
+Можно переопределить файлы результата через переменные:
+
+```env
+PIPELINE_RESULTS_CSV=pipeline_results.csv
+PIPELINE_RESULTS_XLSX=pipeline_results.xlsx
+PIPELINE_ROW_DELAY_SECONDS=2
+```
