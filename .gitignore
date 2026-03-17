@@ -16,6 +16,7 @@ pip-wheel-metadata/
 # Playwright / Telegram session (НЕ коммитим)
 tg_profile/
 report_debug/
+tg_bot_jobs/
 
 # Playwright artifacts (если включишь записи/скриншоты)
 playwright-report/

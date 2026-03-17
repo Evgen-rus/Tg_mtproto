@@ -159,3 +159,28 @@ PIPELINE_RESULTS_CSV=pipeline_results.csv
 PIPELINE_RESULTS_XLSX=pipeline_results.xlsx
 PIPELINE_ROW_DELAY_SECONDS=2
 ```
+
+## Telegram-бот для файлов
+
+Если нужен сценарий:
+
+1. пользователь кидает `xlsx/csv` в Telegram-группу
+2. бот принимает файл
+3. запускает пайплайн
+4. пишет статус обработки
+5. отправляет обратно готовый `xlsx`
+
+используй:
+
+```bash
+python tg_file_pipeline_bot.py
+```
+
+Нужно заполнить в `.env`:
+
+```env
+TG_BOT_TOKEN=...
+ID_TG_CHAT=-...
+```
+
+Бот принимает только файлы из этого чата. Рабочие временные файлы складываются в `tg_bot_jobs/`.

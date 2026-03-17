@@ -78,7 +78,7 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def load_runtime_config() -> tuple[int, str, str, str, bool, Path, int]:
+def load_runtime_config() -> tuple[int, str, str, str, bool, Path, int, int]:
     api_id = int(get_required_env("API_ID"))
     api_hash = get_required_env("API_HASH")
     session_name = get_required_env("SESSION_NAME")
@@ -86,8 +86,9 @@ def load_runtime_config() -> tuple[int, str, str, str, bool, Path, int]:
     headless_raw = os.getenv("PLAYWRIGHT_HEADLESS", "1").strip().lower()
     headless = headless_raw not in {"0", "false", "no"}
     debug_dir = Path(os.getenv("REPORT_DEBUG_DIR", "report_debug").strip() or "report_debug")
-    row_delay_seconds = int(os.getenv("PIPELINE_ROW_DELAY_SECONDS", "2").strip() or "2")
-    return api_id, api_hash, session_name, bot_username, headless, debug_dir, row_delay_seconds
+    step_delay_seconds = int(os.getenv("PIPELINE_STEP_DELAY_SECONDS", "3").strip() or "3")
+    row_delay_seconds = int(os.getenv("PIPELINE_ROW_DELAY_SECONDS", "5").strip() or "5")
+    return api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds
 
 
 def normalize_inn(value: str | None) -> str | None:
@@ -327,6 +328,7 @@ async def resolve_row(
     log: logging.Logger,
     headless: bool,
     debug_dir: Path,
+    step_delay_seconds: int,
 ) -> dict[str, str | None]:
     if not item.source_inn:
         return build_input_error_row(item, "Во втором столбце не удалось распознать ИНН")
@@ -357,12 +359,17 @@ async def resolve_row(
 
     found_phone = getattr(getattr(phone_state, "person", None), "phone", None)
     if not found_phone:
+        if step_delay_seconds > 0:
+            await asyncio.sleep(step_delay_seconds)
         return build_pipeline_row(
             item,
             entity_type=entity_type,
             phone_source=phone_source,
             phone_state=phone_state,
         )
+
+    if step_delay_seconds > 0:
+        await asyncio.sleep(step_delay_seconds)
 
     summary_state = await get_phone_summary.run_single_query(
         client,
@@ -372,6 +379,9 @@ async def resolve_row(
         persist=False,
         echo=False,
     )
+
+    if step_delay_seconds > 0:
+        await asyncio.sleep(step_delay_seconds)
 
     return build_pipeline_row(
         item,
@@ -397,7 +407,7 @@ async def ainput(prompt: str) -> str:
 async def main() -> None:
     args = parse_args()
     log = setup_logging()
-    api_id, api_hash, session_name, bot_username, headless, debug_dir, row_delay_seconds = load_runtime_config()
+    api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds = load_runtime_config()
 
     input_path_raw = args.input_path
     if not input_path_raw:
@@ -442,6 +452,7 @@ async def main() -> None:
                 log=log,
                 headless=headless,
                 debug_dir=debug_dir,
+                step_delay_seconds=step_delay_seconds,
             )
             append_pipeline_result(output_csv, output_xlsx, row)
 
