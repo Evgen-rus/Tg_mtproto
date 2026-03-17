@@ -9,7 +9,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openpyxl import Workbook, load_workbook
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, helpers
+from telethon.tl import types
 
 load_dotenv()
 
@@ -29,6 +30,12 @@ RESULT_FIELDNAMES = [
     "telegram",
     "email",
     "inn",
+    "vk_text",
+    "vk_urls",
+    "instagram_text",
+    "instagram_urls",
+    "ok_text",
+    "ok_urls",
 ]
 
 QUERY_TIMEOUT_SECONDS = 90
@@ -46,6 +53,12 @@ class PhoneSummary:
     telegram: str | None = None
     email: str | None = None
     inn: str | None = None
+    vk_text: str | None = None
+    vk_urls: str | None = None
+    instagram_text: str | None = None
+    instagram_urls: str | None = None
+    ok_text: str | None = None
+    ok_urls: str | None = None
     raw_text: str | None = None
 
 
@@ -202,7 +215,74 @@ def extract_labeled_fields(text: str) -> dict[str, str]:
     return result
 
 
-def parse_phone_summary(text: str) -> PhoneSummary | None:
+def get_entity_text(text: str, entity) -> str:
+    surrogate_text = helpers.add_surrogate(text)
+    entity_surrogate_text = surrogate_text[entity.offset : entity.offset + entity.length]
+    return helpers.del_surrogate(entity_surrogate_text)
+
+
+def join_unique(items: list[str]) -> str | None:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    return " | ".join(cleaned) if cleaned else None
+
+
+def extract_social_links(message, text: str) -> dict[str, list[str]]:
+    result = {
+        "vk_text": [],
+        "vk_urls": [],
+        "instagram_text": [],
+        "instagram_urls": [],
+        "ok_text": [],
+        "ok_urls": [],
+    }
+
+    entities = getattr(message, "entities", None) or []
+    lines = text.splitlines()
+
+    for entity in entities:
+        entity_text = get_entity_text(text, entity).strip()
+        if not entity_text:
+            continue
+
+        line = ""
+        for raw_line in lines:
+            if entity_text in raw_line:
+                line = raw_line.strip()
+                break
+
+        lower_line = line.casefold()
+        url: str | None = None
+
+        if isinstance(entity, types.MessageEntityTextUrl):
+            url = entity.url
+        elif isinstance(entity, types.MessageEntityUrl):
+            url = entity_text
+
+        if "вконтакте" in lower_line or (url and "vk.com" in url.casefold()):
+            result["vk_text"].append(entity_text)
+            if url:
+                result["vk_urls"].append(url)
+        elif "instagram" in lower_line or (url and "instagram.com" in url.casefold()):
+            result["instagram_text"].append(entity_text)
+            if url:
+                result["instagram_urls"].append(url)
+        elif "одноклассники" in lower_line or (url and "ok.ru" in url.casefold()):
+            result["ok_text"].append(entity_text)
+            if url:
+                result["ok_urls"].append(url)
+
+    return result
+
+
+def parse_phone_summary(message) -> PhoneSummary | None:
+    text = get_message_text(message)
     fields = extract_labeled_fields(text)
     if "Телефон" not in fields and "ФИО" not in fields:
         return None
@@ -215,6 +295,8 @@ def parse_phone_summary(text: str) -> PhoneSummary | None:
     if age:
         age = re.sub(r"\D", "", age) or age
 
+    social = extract_social_links(message, text)
+
     summary = PhoneSummary(
         phone=normalize_phone_value(fields.get("Телефон")),
         operator=fields.get("Оператор") or None,
@@ -226,6 +308,12 @@ def parse_phone_summary(text: str) -> PhoneSummary | None:
         telegram=fields.get("Telegram") or None,
         email=fields.get("Email") or None,
         inn=fields.get("ИНН") or None,
+        vk_text=join_unique(social["vk_text"]),
+        vk_urls=join_unique(social["vk_urls"]),
+        instagram_text=join_unique(social["instagram_text"]),
+        instagram_urls=join_unique(social["instagram_urls"]),
+        ok_text=join_unique(social["ok_text"]),
+        ok_urls=join_unique(social["ok_urls"]),
         raw_text=text,
     )
     return summary
@@ -251,7 +339,7 @@ async def wait_for_summary_message(state: QueryState, log: logging.Logger) -> tu
             log.info("Received not-found response for current query")
             return "not_found", not_found_message
 
-        summary = parse_phone_summary(text)
+        summary = parse_phone_summary(message)
         if summary:
             log.info("Received phone summary: fio=%r phone=%r", summary.fio, summary.phone)
             return "summary", summary
@@ -273,6 +361,12 @@ def build_result_row(state: QueryState) -> dict[str, str | None]:
         "telegram": summary.telegram if summary else None,
         "email": summary.email if summary else None,
         "inn": summary.inn if summary else None,
+        "vk_text": summary.vk_text if summary else None,
+        "vk_urls": summary.vk_urls if summary else None,
+        "instagram_text": summary.instagram_text if summary else None,
+        "instagram_urls": summary.instagram_urls if summary else None,
+        "ok_text": summary.ok_text if summary else None,
+        "ok_urls": summary.ok_urls if summary else None,
     }
 
 
@@ -415,6 +509,9 @@ async def main() -> None:
             print(f"phone: {current_query.summary.phone if current_query.summary else 'not found'}")
             print(f"email: {current_query.summary.email if current_query.summary else 'not found'}")
             print(f"inn: {current_query.summary.inn if current_query.summary else 'not found'}")
+            print(f"vk_urls: {current_query.summary.vk_urls if current_query.summary else 'not found'}")
+            print(f"instagram_urls: {current_query.summary.instagram_urls if current_query.summary else 'not found'}")
+            print(f"ok_urls: {current_query.summary.ok_urls if current_query.summary else 'not found'}")
             print(f"saved_to: {results_csv}")
             print(f"saved_to: {results_xlsx}")
             print()

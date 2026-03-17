@@ -52,4 +52,5 @@ tg_results.sqlite3-shm
 
 *.xlsx
 *.log
-results.csv
+*.csv
+.~lock.*
