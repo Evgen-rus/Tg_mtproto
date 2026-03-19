@@ -359,6 +359,7 @@ async def handle_document_message(
             caption=caption,
             reply_to_message_id=message.get("message_id"),
         )
+        log.info("Result file sent to chat %s: %s", chat_id, output_xlsx)
     except Exception as exc:
         log.exception("Failed to send result document")
         await safe_edit_message(
