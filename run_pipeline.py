@@ -18,6 +18,8 @@ import get_phone_summary
 
 load_dotenv()
 
+DIRECT_PHONE_RE = re.compile(r"^7\d{10}$")
+
 PIPELINE_FIELDNAMES = [
     "source_row",
     "source_name",
@@ -98,6 +100,15 @@ def normalize_inn(value: str | None) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def normalize_direct_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not DIRECT_PHONE_RE.fullmatch(candidate):
+        return None
+    return candidate
 
 
 def looks_like_header(first: str, second: str) -> bool:
@@ -194,6 +205,8 @@ def load_input_rows(path: Path) -> list[InputRow]:
 
 
 def detect_entity_type(source_name: str) -> str:
+    if normalize_direct_phone(source_name):
+        return "phone"
     return "ip" if IP_MARKERS_RE.search(source_name or "") else "company"
 
 
@@ -320,6 +333,54 @@ def build_pipeline_row(
     }
 
 
+def build_direct_phone_summary_row(
+    item: InputRow,
+    *,
+    direct_phone: str,
+    summary_state,
+) -> dict[str, str | None]:
+    summary = getattr(summary_state, "summary", None)
+    summary_status = summary_state.result_status
+    summary_message = summary_state.status_message or summary_state.error
+
+    if summary_state.result_status == "found":
+        pipeline_status = "found"
+        pipeline_message = summary_message or "Phone summary received"
+    else:
+        pipeline_status = "summary_failed"
+        pipeline_message = summary_message
+
+    return {
+        "source_row": str(item.source_row),
+        "source_name": item.source_name,
+        "source_inn": None,
+        "entity_type": "phone",
+        "phone_source": "direct_phone_input",
+        "phone_lookup_status": None,
+        "phone_lookup_message": None,
+        "found_person": None,
+        "found_phone": direct_phone,
+        "found_email": None,
+        "found_person_inn": None,
+        "summary_status": summary_status,
+        "summary_message": summary_message,
+        "summary_fio": summary.fio if summary else None,
+        "summary_birth_date": summary.birth_date if summary else None,
+        "summary_age": summary.age if summary else None,
+        "summary_telegram": summary.telegram if summary else None,
+        "summary_email": summary.email if summary else None,
+        "summary_inn": summary.inn if summary else None,
+        "vk_text": summary.vk_text if summary else None,
+        "vk_urls": summary.vk_urls if summary else None,
+        "instagram_text": summary.instagram_text if summary else None,
+        "instagram_urls": summary.instagram_urls if summary else None,
+        "ok_text": summary.ok_text if summary else None,
+        "ok_urls": summary.ok_urls if summary else None,
+        "pipeline_status": pipeline_status,
+        "pipeline_message": pipeline_message,
+    }
+
+
 async def resolve_row(
     client: TelegramClient,
     bot_entity,
@@ -330,6 +391,23 @@ async def resolve_row(
     debug_dir: Path,
     step_delay_seconds: int,
 ) -> dict[str, str | None]:
+    direct_phone = normalize_direct_phone(item.source_name)
+    if direct_phone:
+        summary_state = await get_phone_summary.run_single_query(
+            client,
+            bot_entity,
+            direct_phone,
+            log=log,
+            persist=False,
+            echo=False,
+        )
+        if step_delay_seconds > 0:
+            await asyncio.sleep(step_delay_seconds)
+        return build_direct_phone_summary_row(
+            item,
+            direct_phone=direct_phone,
+            summary_state=summary_state,
+        )
     if not item.source_inn:
         return build_input_error_row(item, "Во втором столбце не удалось распознать ИНН")
 
@@ -441,7 +519,10 @@ async def main() -> None:
 
         for index, item in enumerate(rows, start=1):
             entity_type = detect_entity_type(item.source_name)
-            print(f"[{index}/{len(rows)}] row={item.source_row} type={entity_type} inn={item.source_inn or 'missing'}")
+            if entity_type == "phone":
+                print(f"[{index}/{len(rows)}] row={item.source_row} type={entity_type} phone={item.source_name}")
+            else:
+                print(f"[{index}/{len(rows)}] row={item.source_row} type={entity_type} inn={item.source_inn or 'missing'}")
             if item.source_name:
                 print(f"    name: {item.source_name}")
 
