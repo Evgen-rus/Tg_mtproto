@@ -30,6 +30,7 @@ RESULT_FIELDNAMES = [
     "telegram",
     "email",
     "inn",
+    "phone_books",
     "vk_text",
     "vk_urls",
     "instagram_text",
@@ -53,6 +54,7 @@ class PhoneSummary:
     telegram: str | None = None
     email: str | None = None
     inn: str | None = None
+    phone_books: str | None = None
     vk_text: str | None = None
     vk_urls: str | None = None
     instagram_text: str | None = None
@@ -177,7 +179,8 @@ def extract_labeled_fields(text: str) -> dict[str, str]:
         "Email",
         "ИНН",
     ]
-    multi_line_labels = {"Telegram", "E-mail", "Email"}
+    labels.extend(["Телефонные книги", "Мобильный банк", "Интересовались этим"])
+    multi_line_labels = {"Telegram", "E-mail", "Email", "Телефонные книги"}
 
     result: dict[str, str] = {}
     current_label: str | None = None
@@ -308,6 +311,7 @@ def parse_phone_summary(message) -> PhoneSummary | None:
         telegram=fields.get("Telegram") or None,
         email=fields.get("Email") or None,
         inn=fields.get("ИНН") or None,
+        phone_books=fields.get("Телефонные книги") or None,
         vk_text=join_unique(social["vk_text"]),
         vk_urls=join_unique(social["vk_urls"]),
         instagram_text=join_unique(social["instagram_text"]),
@@ -361,6 +365,7 @@ def build_result_row(state: QueryState) -> dict[str, str | None]:
         "telegram": summary.telegram if summary else None,
         "email": summary.email if summary else None,
         "inn": summary.inn if summary else None,
+        "phone_books": summary.phone_books if summary else None,
         "vk_text": summary.vk_text if summary else None,
         "vk_urls": summary.vk_urls if summary else None,
         "instagram_text": summary.instagram_text if summary else None,
