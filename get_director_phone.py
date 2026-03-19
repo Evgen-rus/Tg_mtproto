@@ -23,7 +23,7 @@ EMAIL_RE = re.compile(r"\bEmail\s*:\s*([^\s\n]+)", re.IGNORECASE)
 PERSON_INN_RE = re.compile(r"\bИНН\s*:\s*(\d{12}|\d{10})\b")
 NOT_FOUND_RE = re.compile(r"к сожалению,\s*по данному запросу ничего не найдено", re.IGNORECASE)
 
-CLICK_DELAY_SECONDS = 3
+CLICK_DELAY_SECONDS = 1
 CLICK_TIMEOUT_SECONDS = 12
 QUERY_TIMEOUT_SECONDS = 180
 MAX_DEPTH = 5

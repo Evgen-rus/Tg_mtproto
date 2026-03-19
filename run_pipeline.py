@@ -221,24 +221,26 @@ def append_result_csv(path: Path, row: dict[str, str | None]) -> None:
         writer.writerow(row)
 
 
-def append_result_xlsx(path: Path, row: dict[str, str | None]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        workbook = load_workbook(path)
-        worksheet = workbook.active
-    else:
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.title = "pipeline"
-        worksheet.append(PIPELINE_FIELDNAMES)
-
-    worksheet.append([row.get(field) for field in PIPELINE_FIELDNAMES])
-    workbook.save(path)
-
-
-def append_pipeline_result(csv_path: Path, xlsx_path: Path, row: dict[str, str | None]) -> None:
+def append_pipeline_result(csv_path: Path, row: dict[str, str | None]) -> None:
     append_result_csv(csv_path, row)
-    append_result_xlsx(xlsx_path, row)
+
+
+def write_pipeline_results_xlsx(path: Path, rows: Iterable[dict[str, str | None]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    workbook = Workbook(write_only=True)
+    worksheet = workbook.create_sheet(title="pipeline")
+    worksheet.append(PIPELINE_FIELDNAMES)
+
+    try:
+        for row in rows:
+            worksheet.append([row.get(field) for field in PIPELINE_FIELDNAMES])
+        workbook.save(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        workbook.close()
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def build_input_error_row(item: InputRow, message: str) -> dict[str, str | None]:
@@ -520,6 +522,7 @@ async def main() -> None:
         log.info("Connected to bot %s", bot_username)
         print(f"Loaded {len(rows)} rows from {input_path}")
         print(f"Results -> {output_csv} and {output_xlsx}\n")
+        result_rows: list[dict[str, str | None]] = []
 
         for index, item in enumerate(rows, start=1):
             entity_type = detect_entity_type(item.source_name)
@@ -539,7 +542,8 @@ async def main() -> None:
                 debug_dir=debug_dir,
                 step_delay_seconds=step_delay_seconds,
             )
-            append_pipeline_result(output_csv, output_xlsx, row)
+            append_pipeline_result(output_csv, row)
+            result_rows.append(row)
 
             print(f"    phone_lookup_status: {row['phone_lookup_status']}")
             print(f"    found_phone: {row['found_phone'] or 'not found'}")
@@ -549,6 +553,8 @@ async def main() -> None:
 
             if index < len(rows) and row_delay_seconds > 0:
                 await asyncio.sleep(row_delay_seconds)
+
+        write_pipeline_results_xlsx(output_xlsx, result_rows)
     finally:
         if client.is_connected():
             await client.disconnect()

@@ -242,7 +242,7 @@ async def process_input_file(
             debug_dir=debug_dir,
             step_delay_seconds=step_delay_seconds,
         )
-        run_pipeline.append_pipeline_result(output_csv, output_xlsx, row)
+        run_pipeline.append_pipeline_result(output_csv, row)
         results.append(row)
 
         await safe_edit_message(
@@ -260,6 +260,7 @@ async def process_input_file(
         if index < len(rows) and row_delay_seconds > 0:
             await asyncio.sleep(row_delay_seconds)
 
+    run_pipeline.write_pipeline_results_xlsx(output_xlsx, results)
     return results
 
 
