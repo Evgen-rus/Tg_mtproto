@@ -56,6 +56,12 @@ ID_TG_CHAT=
 LOG_LEVEL=INFO
 # 0 - показывать окно браузера, 1 - работать скрыто; по умолчанию 1
 PLAYWRIGHT_HEADLESS=0
+# использовать ли прокси для Telethon и Telegram Bot API; по умолчанию false
+USE_PROXY=false
+# настройки прокси для Telethon и Telegram Bot API; используются только если USE_PROXY=true
+PROXY_TYPE=socks5
+PROXY_HOST=127.0.0.1
+PROXY_PORT=10808
 # пауза между шагами внутри обработки одной строки; по умолчанию 3
 PIPELINE_STEP_DELAY_SECONDS=3
 # пауза между строками входного файла; по умолчанию 5

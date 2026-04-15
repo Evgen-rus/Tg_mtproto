@@ -20,6 +20,8 @@ import urllib.request
 
 from dotenv import load_dotenv
 
+from telethon_client_factory import open_url
+
 load_dotenv()
 
 
@@ -36,7 +38,7 @@ def telegram_api_request(token: str, method: str, params: dict | None = None) ->
     if query:
         url = f"{url}?{query}"
 
-    with urllib.request.urlopen(url, timeout=70) as response:
+    with open_url(url, timeout=70) as response:
         payload = response.read().decode("utf-8")
     data = json.loads(payload)
     if not data.get("ok"):

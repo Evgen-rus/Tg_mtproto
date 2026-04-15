@@ -15,6 +15,7 @@ from telethon import TelegramClient
 import get_director_phone
 import get_ip_phone
 import get_phone_summary
+from telethon_client_factory import build_telegram_client
 
 load_dotenv()
 
@@ -509,7 +510,7 @@ async def main() -> None:
     if not rows:
         raise RuntimeError(f"No data rows found in {input_path}")
 
-    client = TelegramClient(session_name, api_id, api_hash)
+    client = build_telegram_client(session_name, api_id, api_hash)
     try:
         await client.connect()
         if not await client.is_user_authorized():

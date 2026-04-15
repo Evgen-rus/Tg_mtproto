@@ -14,6 +14,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from telethon import TelegramClient, events
 
+from telethon_client_factory import build_telegram_client
+
 load_dotenv()
 
 NOT_FOUND_RE = re.compile(r"к сожалению,\s*по данному запросу ничего не найдено", re.IGNORECASE)
@@ -659,7 +661,7 @@ async def run_single_query(
 async def main() -> None:
     log = setup_logging()
     api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, headless, debug_dir = load_config()
-    client = TelegramClient(session_name, api_id, api_hash)
+    client = build_telegram_client(session_name, api_id, api_hash)
     current_query: QueryState | None = None
 
     try:

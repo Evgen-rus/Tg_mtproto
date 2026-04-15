@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 
 import run_pipeline
+from telethon_client_factory import build_telegram_client, open_url
 
 load_dotenv()
 
@@ -44,7 +45,7 @@ def telegram_api_request(token: str, method: str, params: dict | None = None) ->
     if query:
         url = f"{url}?{query}"
 
-    with urllib.request.urlopen(url, timeout=70) as response:
+    with open_url(url, timeout=70) as response:
         payload = response.read().decode("utf-8")
     data = json.loads(payload)
     if not data.get("ok"):
@@ -88,7 +89,7 @@ def telegram_api_post_multipart(
         method="POST",
     )
 
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with open_url(request, timeout=120) as response:
         payload = response.read().decode("utf-8")
     data = json.loads(payload)
     if not data.get("ok"):
@@ -175,7 +176,7 @@ async def download_file(token: str, file_id: str, destination: Path) -> Path:
     file_info = await bot_api_request(token, "getFile", {"file_id": file_id})
     file_path = file_info["result"]["file_path"]
     download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-    data = await asyncio.to_thread(lambda: urllib.request.urlopen(download_url, timeout=120).read())
+    data = await asyncio.to_thread(lambda: open_url(download_url, timeout=120).read())
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
     return destination
@@ -395,7 +396,7 @@ async def main() -> None:
     jobs_dir = Path(os.getenv("TG_BOT_JOBS_DIR", "tg_bot_jobs").strip() or "tg_bot_jobs")
 
     api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds = run_pipeline.load_runtime_config()
-    client = TelegramClient(session_name, api_id, api_hash)
+    client = build_telegram_client(session_name, api_id, api_hash)
 
     await client.connect()
     if not await client.is_user_authorized():

@@ -3,8 +3,9 @@ import os
 
 import qrcode
 from dotenv import load_dotenv
-from telethon import TelegramClient
 from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
+
+from telethon_client_factory import build_telegram_client, get_proxy_settings
 
 load_dotenv()
 
@@ -32,7 +33,10 @@ def print_qr(url: str) -> None:
 
 async def main() -> None:
     api_id, api_hash, session_name = load_config()
-    client = TelegramClient(session_name, api_id, api_hash)
+    proxy = get_proxy_settings()
+    if proxy is not None:
+        print(f"Using proxy: {proxy[0]}://{proxy[1]}:{proxy[2]}")
+    client = build_telegram_client(session_name, api_id, api_hash)
 
     await client.connect()
     try:
