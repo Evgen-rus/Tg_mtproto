@@ -72,6 +72,14 @@ PIPELINE_RESULTS_CSV=pipeline_results.csv
 PIPELINE_RESULTS_XLSX=pipeline_results.xlsx
 ```
 
+Если Telegram не открывается напрямую или `Telethon` / Bot API падают по таймауту, включи:
+
+```env
+USE_PROXY=true
+```
+
+и укажи рабочие `PROXY_TYPE`, `PROXY_HOST`, `PROXY_PORT`.
+
 ## Быстрый старт
 
 ### 1. Создать Telegram-сессию
