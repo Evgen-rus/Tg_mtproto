@@ -48,6 +48,7 @@ PIPELINE_FIELDNAMES = [
     "instagram_urls",
     "ok_text",
     "ok_urls",
+    "site_url",
     "pipeline_status",
     "pipeline_message",
 ]
@@ -82,17 +83,24 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def load_runtime_config() -> tuple[int, str, str, str, bool, Path, int, int]:
+def get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def load_runtime_config() -> tuple[int, str, str, str, bool, Path, int, int, bool]:
     api_id = int(get_required_env("API_ID"))
     api_hash = get_required_env("API_HASH")
     session_name = get_required_env("SESSION_NAME")
     bot_username = get_required_env("BOT")
-    headless_raw = os.getenv("PLAYWRIGHT_HEADLESS", "1").strip().lower()
-    headless = headless_raw not in {"0", "false", "no"}
+    headless = get_bool_env("PLAYWRIGHT_HEADLESS", True)
     debug_dir = Path(os.getenv("REPORT_DEBUG_DIR", "report_debug").strip() or "report_debug")
     step_delay_seconds = int(os.getenv("PIPELINE_STEP_DELAY_SECONDS", "3").strip() or "3")
     row_delay_seconds = int(os.getenv("PIPELINE_ROW_DELAY_SECONDS", "5").strip() or "5")
-    return api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds
+    bot_message_echo = get_bool_env("BOT_MESSAGE_ECHO", False)
+    return api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds, bot_message_echo
 
 
 def normalize_inn(value: str | None) -> str | None:
@@ -272,6 +280,7 @@ def build_input_error_row(item: InputRow, message: str) -> dict[str, str | None]
         "instagram_urls": None,
         "ok_text": None,
         "ok_urls": None,
+        "site_url": None,
         "pipeline_status": "input_error",
         "pipeline_message": message,
     }
@@ -334,6 +343,7 @@ def build_pipeline_row(
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "site_url": summary.site_url if summary else None,
         "pipeline_status": pipeline_status,
         "pipeline_message": pipeline_message,
     }
@@ -383,6 +393,7 @@ def build_direct_phone_summary_row(
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "site_url": summary.site_url if summary else None,
         "pipeline_status": pipeline_status,
         "pipeline_message": pipeline_message,
     }
@@ -397,6 +408,7 @@ async def resolve_row(
     headless: bool,
     debug_dir: Path,
     step_delay_seconds: int,
+    bot_message_echo: bool,
 ) -> dict[str, str | None]:
     direct_phone = normalize_direct_phone(item.source_name)
     if direct_phone:
@@ -406,7 +418,7 @@ async def resolve_row(
             direct_phone,
             log=log,
             persist=False,
-            echo=False,
+            echo=bot_message_echo,
         )
         if step_delay_seconds > 0:
             await asyncio.sleep(step_delay_seconds)
@@ -427,7 +439,7 @@ async def resolve_row(
             item.source_inn,
             log=log,
             persist=False,
-            echo=False,
+            echo=bot_message_echo,
             headless=headless,
             debug_dir=debug_dir,
         )
@@ -439,7 +451,7 @@ async def resolve_row(
             item.source_inn,
             log=log,
             persist=False,
-            echo=False,
+            echo=bot_message_echo,
         )
 
     found_phone = getattr(getattr(phone_state, "person", None), "phone", None)
@@ -462,7 +474,7 @@ async def resolve_row(
         found_phone,
         log=log,
         persist=False,
-        echo=False,
+        echo=bot_message_echo,
     )
 
     if step_delay_seconds > 0:
@@ -492,7 +504,7 @@ async def ainput(prompt: str) -> str:
 async def main() -> None:
     args = parse_args()
     log = setup_logging()
-    api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds = load_runtime_config()
+    api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds, bot_message_echo = load_runtime_config()
 
     input_path_raw = args.input_path
     if not input_path_raw:
@@ -542,6 +554,7 @@ async def main() -> None:
                 headless=headless,
                 debug_dir=debug_dir,
                 step_delay_seconds=step_delay_seconds,
+                bot_message_echo=bot_message_echo,
             )
             append_pipeline_result(output_csv, row)
             result_rows.append(row)

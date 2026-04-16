@@ -205,6 +205,7 @@ async def process_input_file(
     debug_dir: Path,
     step_delay_seconds: int,
     row_delay_seconds: int,
+    bot_message_echo: bool,
 ) -> list[dict[str, str | None]]:
     rows = run_pipeline.load_input_rows(input_path)
     if not rows:
@@ -242,6 +243,7 @@ async def process_input_file(
             headless=headless,
             debug_dir=debug_dir,
             step_delay_seconds=step_delay_seconds,
+            bot_message_echo=bot_message_echo,
         )
         run_pipeline.append_pipeline_result(output_csv, row)
         results.append(row)
@@ -277,6 +279,7 @@ async def handle_document_message(
     debug_dir: Path,
     step_delay_seconds: int,
     row_delay_seconds: int,
+    bot_message_echo: bool,
     log: logging.Logger,
 ) -> None:
     document = message.get("document") or {}
@@ -323,6 +326,7 @@ async def handle_document_message(
             debug_dir=debug_dir,
             step_delay_seconds=step_delay_seconds,
             row_delay_seconds=row_delay_seconds,
+            bot_message_echo=bot_message_echo,
         )
     except Exception as exc:
         log.exception("File processing failed")
@@ -395,7 +399,7 @@ async def main() -> None:
     target_chat_id = int(get_required_env("ID_TG_CHAT"))
     jobs_dir = Path(os.getenv("TG_BOT_JOBS_DIR", "tg_bot_jobs").strip() or "tg_bot_jobs")
 
-    api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds = run_pipeline.load_runtime_config()
+    api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds, bot_message_echo = run_pipeline.load_runtime_config()
     client = build_telegram_client(session_name, api_id, api_hash)
 
     await client.connect()
@@ -466,6 +470,7 @@ async def main() -> None:
                     debug_dir=debug_dir,
                     step_delay_seconds=step_delay_seconds,
                     row_delay_seconds=row_delay_seconds,
+                    bot_message_echo=bot_message_echo,
                     log=log,
                 )
     finally:

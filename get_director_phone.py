@@ -68,6 +68,7 @@ class ButtonCandidate:
     row_index: int
     col_index: int
     text: str
+    url: str | None = None
 
 
 @dataclass
@@ -115,7 +116,14 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def load_config() -> tuple[int, str, str, str, Path, Path]:
+def get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def load_config() -> tuple[int, str, str, str, Path, Path, bool]:
     api_id = int(get_required_env("API_ID"))
     api_hash = get_required_env("API_HASH")
     session_name = get_required_env("SESSION_NAME")
@@ -123,7 +131,8 @@ def load_config() -> tuple[int, str, str, str, Path, Path]:
     results_csv = Path(os.getenv("RESULTS_CSV", "results.csv").strip() or "results.csv")
     default_xlsx = results_csv.with_suffix(".xlsx")
     results_xlsx = Path(os.getenv("RESULTS_XLSX", str(default_xlsx)).strip() or str(default_xlsx))
-    return api_id, api_hash, session_name, bot_username, results_csv, results_xlsx
+    bot_message_echo = get_bool_env("BOT_MESSAGE_ECHO", True)
+    return api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, bot_message_echo
 
 
 async def ainput(prompt: str) -> str:
@@ -140,7 +149,8 @@ def print_buttons(message) -> None:
         return
     print("[buttons]")
     for idx, button in enumerate(buttons, start=1):
-        print(f"{idx}. {button.text}")
+        suffix = f" | url={button.url}" if button.url else ""
+        print(f"{idx}. row={button.row_index} col={button.col_index} text={button.text}{suffix}")
 
 
 def print_incoming(prefix: str, message) -> None:
@@ -228,6 +238,7 @@ def flatten_buttons(message) -> list[ButtonCandidate]:
                     row_index=row_index,
                     col_index=col_index,
                     text=(button.text or "").strip(),
+                    url=getattr(button, "url", None),
                 )
             )
     return out
@@ -389,7 +400,8 @@ async def explore_message(
 
     print(f"{indent}[buttons] found {len(buttons)}:")
     for idx, button in enumerate(buttons, start=1):
-        print(f"{indent}{idx}. {button.text}")
+        suffix = f" | url={button.url}" if button.url else ""
+        print(f"{indent}{idx}. row={button.row_index} col={button.col_index} text={button.text}{suffix}")
 
     actionable_buttons = [button for button in buttons if not should_skip_button(button.text)]
     skipped_buttons = [button for button in buttons if should_skip_button(button.text)]
@@ -569,7 +581,7 @@ async def run_single_query(
 
 async def main() -> None:
     log = setup_logging()
-    api_id, api_hash, session_name, bot_username, results_csv, results_xlsx = load_config()
+    api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, bot_message_echo = load_config()
     client = build_telegram_client(session_name, api_id, api_hash)
     current_query: QueryState | None = None
 
@@ -588,7 +600,8 @@ async def main() -> None:
             nonlocal current_query
 
             message = event.message
-            print_incoming(prefix, message)
+            if bot_message_echo:
+                print_incoming(prefix, message)
 
             if current_query is not None:
                 current_query.queue.put_nowait(message)
@@ -617,7 +630,8 @@ async def main() -> None:
 
             current_query = QueryState(requested_inn=inn)
             command = f"/inn {inn}"
-            print(f"[you] {command}")
+            if bot_message_echo:
+                print(f"[you] {command}")
             await client.send_message(bot_entity, command)
 
             try:

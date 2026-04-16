@@ -39,9 +39,11 @@ RESULT_FIELDNAMES = [
     "instagram_urls",
     "ok_text",
     "ok_urls",
+    "site_url",
 ]
 
 QUERY_TIMEOUT_SECONDS = 90
+SUMMARY_BUTTON_GRACE_SECONDS = 5
 
 
 @dataclass
@@ -63,6 +65,7 @@ class PhoneSummary:
     instagram_urls: str | None = None
     ok_text: str | None = None
     ok_urls: str | None = None
+    site_url: str | None = None
     raw_text: str | None = None
 
 
@@ -94,7 +97,14 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def load_config() -> tuple[int, str, str, str, Path, Path]:
+def get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def load_config() -> tuple[int, str, str, str, Path, Path, bool]:
     api_id = int(get_required_env("API_ID"))
     api_hash = get_required_env("API_HASH")
     session_name = get_required_env("SESSION_NAME")
@@ -108,7 +118,8 @@ def load_config() -> tuple[int, str, str, str, Path, Path]:
         os.getenv("PHONE_SUMMARY_RESULTS_XLSX", str(default_xlsx)).strip()
         or str(default_xlsx)
     )
-    return api_id, api_hash, session_name, bot_username, results_csv, results_xlsx
+    bot_message_echo = get_bool_env("BOT_MESSAGE_ECHO", True)
+    return api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, bot_message_echo
 
 
 def set_failure(state: QueryState, *, status: str, message: str, error: str | None = None) -> None:
@@ -139,6 +150,17 @@ def get_message_text(message) -> str:
 def print_incoming(prefix: str, message) -> None:
     text = get_message_text(message) or "[empty message]"
     print(f"\n{prefix} {text}")
+    rows = getattr(message, "buttons", None) or []
+    if rows:
+        print("[buttons]")
+        button_index = 0
+        for row_index, row in enumerate(rows):
+            for col_index, button in enumerate(row):
+                button_index += 1
+                button_text = (getattr(button, "text", None) or "").strip()
+                button_url = getattr(button, "url", None)
+                suffix = f" | url={button_url}" if button_url else ""
+                print(f"{button_index}. row={row_index} col={col_index} text={button_text}{suffix}")
     print("> ", end="", flush=True)
 
 
@@ -180,6 +202,10 @@ def extract_labeled_fields(text: str) -> dict[str, str]:
         "E-mail",
         "Email",
         "ИНН",
+        "Сайт",
+        "Ссылка на сайт",
+        "Website",
+        "Site",
     ]
     labels.extend(["Телефонные книги", "Мобильный банк", "Интересовались этим"])
     multi_line_labels = {"Telegram", "E-mail", "Email", "Телефонные книги"}
@@ -286,6 +312,24 @@ def extract_social_links(message, text: str) -> dict[str, list[str]]:
     return result
 
 
+def is_full_report_button(button_text: str) -> bool:
+    normalized = " ".join((button_text or "").split()).casefold()
+    if not normalized:
+        return False
+    return normalized.startswith("открыть полный отчет") or normalized.startswith("открыть полный отчёт")
+
+
+def extract_site_url(message) -> str | None:
+    rows = getattr(message, "buttons", None) or []
+    for row in rows:
+        for button in row:
+            button_text = (getattr(button, "text", None) or "").strip()
+            button_url = getattr(button, "url", None)
+            if button_url and is_full_report_button(button_text):
+                return button_url
+    return None
+
+
 def parse_phone_summary(message) -> PhoneSummary | None:
     text = get_message_text(message)
     fields = extract_labeled_fields(text)
@@ -320,6 +364,7 @@ def parse_phone_summary(message) -> PhoneSummary | None:
         instagram_urls=join_unique(social["instagram_urls"]),
         ok_text=join_unique(social["ok_text"]),
         ok_urls=join_unique(social["ok_urls"]),
+        site_url=extract_site_url(message),
         raw_text=text,
     )
     return summary
@@ -328,15 +373,22 @@ def parse_phone_summary(message) -> PhoneSummary | None:
 async def wait_for_summary_message(state: QueryState, log: logging.Logger) -> tuple[str | None, Any | None]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + QUERY_TIMEOUT_SECONDS
+    fallback_summary: PhoneSummary | None = None
+    button_deadline: float | None = None
 
     while True:
-        remaining = deadline - loop.time()
+        current_deadline = button_deadline if button_deadline is not None else deadline
+        remaining = current_deadline - loop.time()
         if remaining <= 0:
+            if fallback_summary is not None:
+                return "summary", fallback_summary
             return None, None
 
         try:
             message = await asyncio.wait_for(state.queue.get(), timeout=remaining)
         except asyncio.TimeoutError:
+            if fallback_summary is not None:
+                return "summary", fallback_summary
             return None, None
 
         text = get_message_text(message)
@@ -347,8 +399,19 @@ async def wait_for_summary_message(state: QueryState, log: logging.Logger) -> tu
 
         summary = parse_phone_summary(message)
         if summary:
-            log.info("Received phone summary: fio=%r phone=%r", summary.fio, summary.phone)
-            return "summary", summary
+            log.info(
+                "Received phone summary: fio=%r phone=%r site_url=%r",
+                summary.fio,
+                summary.phone,
+                summary.site_url,
+            )
+            if summary.site_url:
+                return "summary", summary
+
+            fallback_summary = summary
+            if button_deadline is None:
+                button_deadline = min(deadline, loop.time() + SUMMARY_BUTTON_GRACE_SECONDS)
+                log.info("Summary received without full-report button, waiting for message edit")
 
 
 def build_result_row(state: QueryState) -> dict[str, str | None]:
@@ -374,6 +437,7 @@ def build_result_row(state: QueryState) -> dict[str, str | None]:
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "site_url": summary.site_url if summary else None,
     }
 
 
@@ -499,7 +563,7 @@ async def run_single_query(
 
 async def main() -> None:
     log = setup_logging()
-    api_id, api_hash, session_name, bot_username, results_csv, results_xlsx = load_config()
+    api_id, api_hash, session_name, bot_username, results_csv, results_xlsx, bot_message_echo = load_config()
     client = build_telegram_client(session_name, api_id, api_hash)
     current_query: QueryState | None = None
 
@@ -517,7 +581,8 @@ async def main() -> None:
         async def handle_bot_message(event, prefix: str) -> None:
             nonlocal current_query
             message = event.message
-            print_incoming(prefix, message)
+            if bot_message_echo:
+                print_incoming(prefix, message)
             if current_query is not None:
                 current_query.queue.put_nowait(message)
 
@@ -544,7 +609,8 @@ async def main() -> None:
                 continue
 
             current_query = QueryState(requested_phone=phone)
-            print(f"[you] {phone}")
+            if bot_message_echo:
+                print(f"[you] {phone}")
             await client.send_message(bot_entity, phone)
 
             try:
@@ -579,6 +645,7 @@ async def main() -> None:
             print(f"vk_urls: {current_query.summary.vk_urls if current_query.summary else 'not found'}")
             print(f"instagram_urls: {current_query.summary.instagram_urls if current_query.summary else 'not found'}")
             print(f"ok_urls: {current_query.summary.ok_urls if current_query.summary else 'not found'}")
+            print(f"site_url: {current_query.summary.site_url if current_query.summary else 'not found'}")
             print(f"saved_to: {results_csv}")
             print(f"saved_to: {results_xlsx}")
             print()
