@@ -13,6 +13,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from telethon import TelegramClient
 
+import google_sheets_client
 import run_pipeline
 from telethon_client_factory import build_telegram_client, open_url
 
@@ -38,6 +39,13 @@ def get_required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required .env value: {name}")
     return value
+
+
+def get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def telegram_api_request(token: str, method: str, params: dict | None = None) -> dict:
@@ -137,6 +145,12 @@ def is_template_filename(filename: str) -> bool:
 def sanitize_stem(name: str) -> str:
     sanitized = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", name).strip("._")
     return sanitized or f"job_{int(time.time())}"
+
+
+def build_google_worksheet_title(file_name: str) -> str:
+    stem = sanitize_stem(Path(file_name).stem)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    return f"{stem}_{timestamp}"
 
 
 async def send_message(token: str, chat_id: int, text: str, reply_to_message_id: int | None = None) -> dict:
@@ -281,6 +295,32 @@ def build_completion_report(rows: list[dict[str, str | None]]) -> tuple[str, str
         f"Email: {collection_metrics[2][1]}, отчёты: {collection_metrics[-1][1]}"
     )
     return detailed, short
+
+
+def export_results_to_google_sheets(file_name: str, rows: list[dict[str, str | None]], log: logging.Logger) -> str:
+    config = google_sheets_client.load_config()
+    service = google_sheets_client.build_sheets_service(config)
+    worksheet_title = google_sheets_client.create_worksheet(
+        service,
+        config.spreadsheet_id,
+        build_google_worksheet_title(file_name),
+        rows=max(1000, len(rows) + 10),
+        cols=max(26, len(run_pipeline.PIPELINE_FIELDNAMES) + 2),
+    )
+    headers = [run_pipeline.PIPELINE_COLUMN_LABELS.get(field, field) for field in run_pipeline.PIPELINE_FIELDNAMES]
+    values = [
+        [row.get(field) for field in run_pipeline.PIPELINE_FIELDNAMES]
+        for row in rows
+    ]
+    google_sheets_client.append_table(
+        service,
+        config.spreadsheet_id,
+        worksheet_title,
+        headers,
+        values,
+    )
+    log.info("Google Sheets export completed: spreadsheet=%s worksheet=%s", config.spreadsheet_id, worksheet_title)
+    return worksheet_title
 
 
 async def process_input_file(
@@ -444,16 +484,27 @@ async def handle_document_message(
         )
         return
 
+    google_sheets_enabled = get_bool_env("GOOGLE_SHEETS_EXPORT_ENABLED", True)
+    google_sheets_status = "Google Sheets: отключено"
+    if google_sheets_enabled:
+        try:
+            worksheet_title = await asyncio.to_thread(export_results_to_google_sheets, file_name, results, log)
+        except Exception as exc:
+            log.exception("Google Sheets export failed")
+            google_sheets_status = f"Google Sheets: ошибка экспорта ({exc})"
+        else:
+            google_sheets_status = f"Google Sheets: лист {worksheet_title}"
+
     detailed_report, short_report = build_completion_report(results)
     await safe_edit_message(
         token,
         chat_id,
         status_message_id,
-        detailed_report,
+        f"{detailed_report}\n\n{google_sheets_status}",
         log,
     )
 
-    caption = f"Готово: {file_name}\n{short_report}"
+    caption = f"Готово: {file_name}\n{short_report}\n{google_sheets_status}"
     try:
         await send_document(
             token,
