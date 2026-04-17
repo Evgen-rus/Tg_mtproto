@@ -25,33 +25,49 @@ PIPELINE_FIELDNAMES = [
     "source_row",
     "source_name",
     "source_inn",
-    "entity_type",
-    "phone_source",
-    "phone_lookup_status",
-    "phone_lookup_message",
-    "found_person",
     "found_phone",
-    "found_email",
-    "found_person_inn",
-    "summary_status",
-    "summary_message",
     "summary_fio",
-    "summary_birth_date",
-    "summary_age",
-    "summary_telegram",
-    "summary_email",
-    "summary_inn",
+    "site_url",
     "phone_books",
+    "summary_telegram",
+    "telegram_url",
+    "whatsapp_url",
     "vk_text",
     "vk_urls",
     "instagram_text",
     "instagram_urls",
     "ok_text",
     "ok_urls",
-    "site_url",
-    "pipeline_status",
+    "max_text",
+    "max_url",    
+    "summary_email",    
+    "summary_birth_date",
+    "summary_age",    
     "pipeline_message",
 ]
+
+PIPELINE_COLUMN_LABELS = {
+    "source_row": "Номер",
+    "source_name": "Телефон или название компании",
+    "source_inn": "ИНН",
+    "found_phone": "Телефон",
+    "summary_fio": "ФИО",
+    "summary_birth_date": "День рождения",
+    "summary_age": "Возраст",
+    "summary_telegram": "Телеграмм",
+    "summary_email": "Email",
+    "phone_books": "Записная книжка",
+    "vk_text": "ВК текст",
+    "vk_urls": "ВК URL",
+    "instagram_text": "INST текст",
+    "instagram_urls": "INST URL",
+    "ok_text": "ОК текст",
+    "ok_urls": "ОК URL",
+    "max_text": "MAX текст",
+    "max_url": "MAX URL",
+    "site_url": "Ссылка на отчет",
+    "pipeline_message": "Статус выполнения",
+}
 
 IP_MARKERS_RE = re.compile(r"\bИП\b|индивидуальн\w+\s+предпринимател\w+", re.IGNORECASE)
 HEADER_NAME_MARKERS = ("название", "контрагент", "наименование", "company", "name")
@@ -224,10 +240,10 @@ def append_result_csv(path: Path, row: dict[str, str | None]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=PIPELINE_FIELDNAMES)
+        writer = csv.DictWriter(handle, fieldnames=PIPELINE_FIELDNAMES, extrasaction="ignore")
         if write_header:
-            writer.writeheader()
-        writer.writerow(row)
+            writer.writerow({field: PIPELINE_COLUMN_LABELS.get(field, field) for field in PIPELINE_FIELDNAMES})
+        writer.writerow({field: row.get(field) for field in PIPELINE_FIELDNAMES})
 
 
 def append_pipeline_result(csv_path: Path, row: dict[str, str | None]) -> None:
@@ -239,7 +255,7 @@ def write_pipeline_results_xlsx(path: Path, rows: Iterable[dict[str, str | None]
     tmp_path = path.with_name(f"{path.name}.tmp")
     workbook = Workbook(write_only=True)
     worksheet = workbook.create_sheet(title="pipeline")
-    worksheet.append(PIPELINE_FIELDNAMES)
+    worksheet.append([PIPELINE_COLUMN_LABELS.get(field, field) for field in PIPELINE_FIELDNAMES])
 
     try:
         for row in rows:
@@ -271,15 +287,19 @@ def build_input_error_row(item: InputRow, message: str) -> dict[str, str | None]
         "summary_birth_date": None,
         "summary_age": None,
         "summary_telegram": None,
+        "telegram_url": None,
         "summary_email": None,
         "summary_inn": None,
         "phone_books": None,
+        "whatsapp_url": None,
         "vk_text": None,
         "vk_urls": None,
         "instagram_text": None,
         "instagram_urls": None,
         "ok_text": None,
         "ok_urls": None,
+        "max_text": None,
+        "max_url": None,
         "site_url": None,
         "pipeline_status": "input_error",
         "pipeline_message": message,
@@ -334,15 +354,19 @@ def build_pipeline_row(
         "summary_birth_date": summary.birth_date if summary else None,
         "summary_age": summary.age if summary else None,
         "summary_telegram": summary.telegram if summary else None,
+        "telegram_url": summary.telegram_url if summary else None,
         "summary_email": summary.email if summary else None,
         "summary_inn": summary.inn if summary else None,
         "phone_books": summary.phone_books if summary else None,
+        "whatsapp_url": summary.whatsapp_url if summary else None,
         "vk_text": summary.vk_text if summary else None,
         "vk_urls": summary.vk_urls if summary else None,
         "instagram_text": summary.instagram_text if summary else None,
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "max_text": summary.max_text if summary else None,
+        "max_url": summary.max_url if summary else None,
         "site_url": summary.site_url if summary else None,
         "pipeline_status": pipeline_status,
         "pipeline_message": pipeline_message,
@@ -384,15 +408,19 @@ def build_direct_phone_summary_row(
         "summary_birth_date": summary.birth_date if summary else None,
         "summary_age": summary.age if summary else None,
         "summary_telegram": summary.telegram if summary else None,
+        "telegram_url": summary.telegram_url if summary else None,
         "summary_email": summary.email if summary else None,
         "summary_inn": summary.inn if summary else None,
         "phone_books": summary.phone_books if summary else None,
+        "whatsapp_url": summary.whatsapp_url if summary else None,
         "vk_text": summary.vk_text if summary else None,
         "vk_urls": summary.vk_urls if summary else None,
         "instagram_text": summary.instagram_text if summary else None,
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "max_text": summary.max_text if summary else None,
+        "max_url": summary.max_url if summary else None,
         "site_url": summary.site_url if summary else None,
         "pipeline_status": pipeline_status,
         "pipeline_message": pipeline_message,

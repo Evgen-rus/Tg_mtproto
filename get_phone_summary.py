@@ -30,15 +30,19 @@ RESULT_FIELDNAMES = [
     "birth_date",
     "age",
     "telegram",
+    "telegram_url",
     "email",
     "inn",
     "phone_books",
+    "whatsapp_url",
     "vk_text",
     "vk_urls",
     "instagram_text",
     "instagram_urls",
     "ok_text",
     "ok_urls",
+    "max_text",
+    "max_url",
     "site_url",
 ]
 
@@ -56,15 +60,19 @@ class PhoneSummary:
     birth_date: str | None = None
     age: str | None = None
     telegram: str | None = None
+    telegram_url: str | None = None
     email: str | None = None
     inn: str | None = None
     phone_books: str | None = None
+    whatsapp_url: str | None = None
     vk_text: str | None = None
     vk_urls: str | None = None
     instagram_text: str | None = None
     instagram_urls: str | None = None
     ok_text: str | None = None
     ok_urls: str | None = None
+    max_text: str | None = None
+    max_url: str | None = None
     site_url: str | None = None
     raw_text: str | None = None
 
@@ -199,6 +207,7 @@ def extract_labeled_fields(text: str) -> dict[str, str]:
         "Дата рождения",
         "Возраст",
         "Telegram",
+        "MAX",
         "E-mail",
         "Email",
         "ИНН",
@@ -312,6 +321,32 @@ def extract_social_links(message, text: str) -> dict[str, list[str]]:
     return result
 
 
+def collect_button_links(message) -> dict[str, str | None]:
+    result = {
+        "telegram_url": None,
+        "whatsapp_url": None,
+        "max_url": None,
+        "site_url": None,
+    }
+    rows = getattr(message, "buttons", None) or []
+    for row in rows:
+        for button in row:
+            button_text = (getattr(button, "text", None) or "").strip()
+            button_url = getattr(button, "url", None)
+            if not button_url:
+                continue
+            normalized = " ".join(button_text.split()).casefold()
+            if result["telegram_url"] is None and "telegram" in normalized:
+                result["telegram_url"] = button_url
+            elif result["whatsapp_url"] is None and "whatsapp" in normalized:
+                result["whatsapp_url"] = button_url
+            elif result["max_url"] is None and normalized.startswith("max"):
+                result["max_url"] = button_url
+            elif result["site_url"] is None and is_full_report_button(button_text):
+                result["site_url"] = button_url
+    return result
+
+
 def is_full_report_button(button_text: str) -> bool:
     normalized = " ".join((button_text or "").split()).casefold()
     if not normalized:
@@ -320,14 +355,7 @@ def is_full_report_button(button_text: str) -> bool:
 
 
 def extract_site_url(message) -> str | None:
-    rows = getattr(message, "buttons", None) or []
-    for row in rows:
-        for button in row:
-            button_text = (getattr(button, "text", None) or "").strip()
-            button_url = getattr(button, "url", None)
-            if button_url and is_full_report_button(button_text):
-                return button_url
-    return None
+    return collect_button_links(message)["site_url"]
 
 
 def parse_phone_summary(message) -> PhoneSummary | None:
@@ -345,6 +373,7 @@ def parse_phone_summary(message) -> PhoneSummary | None:
         age = re.sub(r"\D", "", age) or age
 
     social = extract_social_links(message, text)
+    button_links = collect_button_links(message)
 
     summary = PhoneSummary(
         phone=normalize_phone_value(fields.get("Телефон")),
@@ -355,16 +384,20 @@ def parse_phone_summary(message) -> PhoneSummary | None:
         birth_date=birth_date or None,
         age=age or None,
         telegram=fields.get("Telegram") or None,
+        telegram_url=button_links["telegram_url"],
         email=fields.get("Email") or None,
         inn=fields.get("ИНН") or None,
         phone_books=fields.get("Телефонные книги") or None,
+        whatsapp_url=button_links["whatsapp_url"],
         vk_text=join_unique(social["vk_text"]),
         vk_urls=join_unique(social["vk_urls"]),
         instagram_text=join_unique(social["instagram_text"]),
         instagram_urls=join_unique(social["instagram_urls"]),
         ok_text=join_unique(social["ok_text"]),
         ok_urls=join_unique(social["ok_urls"]),
-        site_url=extract_site_url(message),
+        max_text=fields.get("MAX") or None,
+        max_url=button_links["max_url"],
+        site_url=button_links["site_url"],
         raw_text=text,
     )
     return summary
@@ -428,15 +461,19 @@ def build_result_row(state: QueryState) -> dict[str, str | None]:
         "birth_date": summary.birth_date if summary else None,
         "age": summary.age if summary else None,
         "telegram": summary.telegram if summary else None,
+        "telegram_url": summary.telegram_url if summary else None,
         "email": summary.email if summary else None,
         "inn": summary.inn if summary else None,
         "phone_books": summary.phone_books if summary else None,
+        "whatsapp_url": summary.whatsapp_url if summary else None,
         "vk_text": summary.vk_text if summary else None,
         "vk_urls": summary.vk_urls if summary else None,
         "instagram_text": summary.instagram_text if summary else None,
         "instagram_urls": summary.instagram_urls if summary else None,
         "ok_text": summary.ok_text if summary else None,
         "ok_urls": summary.ok_urls if summary else None,
+        "max_text": summary.max_text if summary else None,
+        "max_url": summary.max_url if summary else None,
         "site_url": summary.site_url if summary else None,
     }
 
