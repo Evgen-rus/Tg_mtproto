@@ -316,7 +316,7 @@ def is_full_report_button(button_text: str) -> bool:
     normalized = " ".join((button_text or "").split()).casefold()
     if not normalized:
         return False
-    return normalized.startswith("открыть полный отчет") or normalized.startswith("открыть полный отчёт")
+    return "открыть полный отчет" in normalized or "открыть полный отчёт" in normalized
 
 
 def extract_site_url(message) -> str | None:
