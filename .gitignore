@@ -55,3 +55,6 @@ tg_results.sqlite3-shm
 *.log
 *.csv
 .~lock.*
+
+# Google sheets
+credentials/
