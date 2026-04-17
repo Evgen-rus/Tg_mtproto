@@ -196,6 +196,93 @@ def count_statuses(rows: list[dict[str, str | None]]) -> dict[str, int]:
     return counts
 
 
+def has_value(value: str | None) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def count_present(rows: list[dict[str, str | None]], key: str) -> int:
+    return sum(1 for row in rows if has_value(row.get(key)))
+
+
+def count_present_any(rows: list[dict[str, str | None]], keys: tuple[str, ...]) -> int:
+    return sum(1 for row in rows if any(has_value(row.get(key)) for key in keys))
+
+
+def build_collection_metrics(rows: list[dict[str, str | None]]) -> list[tuple[str, int]]:
+    return [
+        ("Телефоны", count_present(rows, "found_phone")),
+        ("ФИО", count_present(rows, "summary_fio")),
+        ("Email", count_present(rows, "summary_email")),
+        ("Telegram", count_present(rows, "summary_telegram")),
+        ("Telegram URL", count_present(rows, "telegram_url")),
+        ("Записная книжка", count_present(rows, "phone_books")),
+        ("WhatsApp", count_present(rows, "whatsapp_url")),
+        ("VK", count_present_any(rows, ("vk_text", "vk_urls"))),
+        ("Instagram", count_present_any(rows, ("instagram_text", "instagram_urls"))),
+        ("OK", count_present_any(rows, ("ok_text", "ok_urls"))),
+        ("MAX", count_present_any(rows, ("max_text", "max_url"))),
+        ("Ссылки на отчёт", count_present(rows, "site_url")),
+    ]
+
+
+def build_query_metrics(rows: list[dict[str, str | None]]) -> list[tuple[str, int]]:
+    inn_queries = 0
+    phone_queries = 0
+
+    for row in rows:
+        entity_type = row.get("entity_type")
+        if entity_type == "phone":
+            phone_queries += 1
+            continue
+
+        if has_value(row.get("source_inn")):
+            inn_queries += 1
+            if has_value(row.get("found_phone")):
+                phone_queries += 1
+
+    return [
+        ("По ИНН", inn_queries),
+        ("По телефону", phone_queries),
+        ("Всего", inn_queries + phone_queries),
+    ]
+
+
+def format_metric_lines(items: list[tuple[str, int]]) -> str:
+    return "\n".join(f"{label}: {value}" for label, value in items)
+
+
+def build_completion_report(rows: list[dict[str, str | None]]) -> tuple[str, str]:
+    status_counts = count_statuses(rows)
+    collection_metrics = build_collection_metrics(rows)
+    query_metrics = build_query_metrics(rows)
+    status_metrics = sorted(status_counts.items())
+
+    detailed = (
+        "Обработка завершена.\n"
+        f"Строк: {len(rows)}\n\n"
+        "Собрано:\n"
+        f"{format_metric_lines(collection_metrics)}\n\n"
+        "Запросы к Telegram:\n"
+        f"{format_metric_lines(query_metrics)}\n\n"
+        "Статусы:\n"
+        f"{format_metric_lines(status_metrics)}\n\n"
+        "Отправляю результат."
+    )
+
+    short = (
+        f"Строк: {len(rows)}\n"
+        f"Запросы: {query_metrics[-1][1]} "
+        f"(ИНН {query_metrics[0][1]} / тел {query_metrics[1][1]})\n"
+        f"Телефоны: {collection_metrics[0][1]}, ФИО: {collection_metrics[1][1]}, "
+        f"Email: {collection_metrics[2][1]}, отчёты: {collection_metrics[-1][1]}"
+    )
+    return detailed, short
+
+
 async def process_input_file(
     client: TelegramClient,
     bot_entity,
@@ -357,23 +444,16 @@ async def handle_document_message(
         )
         return
 
-    counts = count_statuses(results)
-    summary_parts = [f"{key}: {value}" for key, value in sorted(counts.items())]
-    summary_text = ", ".join(summary_parts) if summary_parts else "без статусов"
+    detailed_report, short_report = build_completion_report(results)
     await safe_edit_message(
         token,
         chat_id,
         status_message_id,
-        (
-            f"Обработка завершена.\n"
-            f"Строк: {len(results)}\n"
-            f"Итог: {summary_text}\n"
-            f"Отправляю результат."
-        ),
+        detailed_report,
         log,
     )
 
-    caption = f"Готово: {file_name}\nСтрок: {len(results)}\n{summary_text}"
+    caption = f"Готово: {file_name}\n{short_report}"
     try:
         await send_document(
             token,
