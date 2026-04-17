@@ -14,6 +14,7 @@
 
 - `run_pipeline.py` - основной оркестратор для запуска по входному `csv/xlsx`
 - `tg_file_pipeline_bot.py` - Telegram file-bot, который принимает файл в чате и отправляет готовый `xlsx` обратно
+- `google_sheets_client.py` - отдельный модуль интеграции с Google Sheets для проверки доступа, создания листа и записи результатов
 - `qr_login.py` - первичная авторизация Telethon через QR и создание файла сессии
 - `util_print_tg_chat_id.py` - получение `ID_TG_CHAT` для режима `tg_file_pipeline_bot.py`
 
@@ -70,6 +71,19 @@ PIPELINE_ROW_DELAY_SECONDS=5
 PIPELINE_RESULTS_CSV=pipeline_results.csv
 # имя итогового xlsx-файла пайплайна; по умолчанию pipeline_results.xlsx
 PIPELINE_RESULTS_XLSX=pipeline_results.xlsx
+# true — в терминал печатаются входящие сообщения бота и все кнопки; по умолчанию
+# для run_pipeline/tg_file_pipeline_bot false, для ручных скриптов true
+BOT_MESSAGE_ECHO=false
+# путь к service-account json для Google Sheets
+GOOGLE_CREDENTIALS_FILE=credentials/service-account.json
+# ID Google-таблицы, в которой будут создаваться новые листы с результатами
+GOOGLE_SHEET_ID=your_google_sheet_id
+# включить/выключить экспорт результата в Google Sheets; по умолчанию true
+GOOGLE_SHEETS_EXPORT_ENABLED=true
+# retry Google Sheets API; по умолчанию 5 / 1 / 20
+GOOGLE_SHEETS_RETRY_ATTEMPTS=5
+GOOGLE_SHEETS_RETRY_BASE_DELAY_SECONDS=1
+GOOGLE_SHEETS_RETRY_MAX_DELAY_SECONDS=20
 ```
 
 Если Telegram не открывается напрямую или `Telethon` / Bot API падают по таймауту, включи:
@@ -177,7 +191,8 @@ python get_phone_summary.py
 1. отправит номер телефона боту
 2. дождётся краткой сводки
 3. вытащит основные поля
-4. сохранит результат в `phone_summary_results.csv` и `phone_summary_results.xlsx`
+4. отдельно возьмёт ссылку на полный отчёт из кнопки `Открыть полный отчет`
+5. сохранит результат в `phone_summary_results.csv` и `phone_summary_results.xlsx`
 
 Выход:
 
@@ -212,6 +227,23 @@ RESULTS_XLSX=results.xlsx
 - телефон
 - email
 - ИНН физлица
+
+Для `get_phone_summary.py` сохраняются:
+
+- телефон
+- ФИО
+- дата рождения
+- возраст
+- Telegram
+- email
+- записная книжка
+- `vk_text`, `vk_urls`
+- `instagram_text`, `instagram_urls`
+- `ok_text`, `ok_urls`
+- `max_text`, `max_url`
+- `telegram_url`
+- `whatsapp_url`
+- `site_url`
 
 ## Единый пайплайн по таблице
 
@@ -274,6 +306,31 @@ python run_pipeline.py input.xlsx
    - `pipeline_results.csv`
    - `pipeline_results.xlsx`
 
+Итоговые колонки пайплайна уже переименованы в человекочитаемый вид. Основные поля:
+
+- `Номер`
+- `Телефон или название компании`
+- `ИНН`
+- `Телефон`
+- `ФИО`
+- `Ссылка на отчет`
+- `Записная книжка`
+- `Телеграмм`
+- `telegram_url`
+- `whatsapp_url`
+- `ВК текст`
+- `ВК URL`
+- `INST текст`
+- `INST URL`
+- `ОК текст`
+- `ОК URL`
+- `MAX текст`
+- `MAX URL`
+- `Email`
+- `День рождения`
+- `Возраст`
+- `Статус выполнения`
+
 Можно переопределить файлы результата через переменные:
 
 ```env
@@ -292,6 +349,7 @@ PIPELINE_ROW_DELAY_SECONDS=5
 3. запускает пайплайн
 4. пишет статус обработки
 5. отправляет обратно готовый `xlsx`
+6. по умолчанию создаёт новый лист в Google Sheets и записывает туда результат файла
 
 используй:
 
@@ -312,6 +370,36 @@ ID_TG_CHAT=
 - таблица с `названием` и `ИНН`
 - таблица со списком телефонов в первом столбце
 
+Если имя файла начинается с `шаблон` или `template`, бот не запускает обработку и просит переименовать файл.
+
 Для режима с телефонами используй формат `7XXXXXXXXXX` без `+7`, пробелов, скобок и дефисов.
 Для такого файла лучше не добавлять заголовок, а просто перечислить номера по одному в строке.
 Готовые примеры можно взять из папки `examples/` и сразу отправить боту.
+
+После завершения bot показывает в Telegram расширенный summary:
+
+- сколько строк обработано
+- сколько данных собрано: телефоны, ФИО, email, Telegram, WhatsApp, соцсети, ссылки на отчёт
+- сколько запросов ушло во внешний Telegram-бот: по ИНН, по телефону, всего
+- разбивку по внутренним статусам обработки
+
+## Google Sheets
+
+Проверить подключение к таблице можно отдельно:
+
+```bash
+python google_sheets_client.py
+```
+
+Скрипт:
+
+1. читает `GOOGLE_CREDENTIALS_FILE` и `GOOGLE_SHEET_ID`
+2. подключается к Google Sheets API
+3. проверяет доступ к таблице
+4. печатает название таблицы и список листов
+
+Важно:
+
+- JSON должен быть файлом service account
+- таблицу нужно расшарить на email этого service account
+- при работе `tg_file_pipeline_bot.py` экспорт в Google Sheets не валит основную обработку: если экспорт не удался, `xlsx` всё равно отправится в Telegram
