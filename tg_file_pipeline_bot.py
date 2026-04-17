@@ -19,6 +19,7 @@ from telethon_client_factory import build_telegram_client, open_url
 load_dotenv()
 
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
+TEMPLATE_FILENAME_PREFIXES = ("шаблон", "template")
 
 
 def setup_logging() -> logging.Logger:
@@ -126,6 +127,11 @@ def extract_message(update: dict) -> dict | None:
 
 def is_supported_filename(filename: str) -> bool:
     return Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def is_template_filename(filename: str) -> bool:
+    stem = Path(filename).stem.strip().casefold()
+    return any(stem.startswith(prefix) for prefix in TEMPLATE_FILENAME_PREFIXES)
 
 
 def sanitize_stem(name: str) -> str:
@@ -289,6 +295,18 @@ async def handle_document_message(
             token,
             chat_id,
             "Поддерживаются только файлы .xlsx, .xlsm и .csv",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return
+
+    if is_template_filename(file_name):
+        await send_message(
+            token,
+            chat_id,
+            (
+                "Этот файл выглядит как шаблон и не запускается в обработку. "
+                "Переименуйте файл и отправьте его заново, если хотите начать поиск."
+            ),
             reply_to_message_id=message.get("message_id"),
         )
         return
