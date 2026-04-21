@@ -55,6 +55,15 @@ BILLABLE_RESULT_FIELDS = (
     "site_url",
 )
 
+INN_REQUEST_NON_BILLABLE_STATUSES = {
+    "",
+    "input_error",
+    "no_response",
+    "not_found",
+    "report_link_missing",
+    "timeout",
+}
+
 
 def now_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -197,19 +206,54 @@ def has_billable_data(row: dict[str, str | None]) -> bool:
     return False
 
 
+def is_successful_inn_request(row: dict[str, str | None]) -> bool:
+    if row.get("entity_type") == "phone":
+        return False
+
+    phone_lookup_status = (row.get("phone_lookup_status") or "").strip()
+    if phone_lookup_status in INN_REQUEST_NON_BILLABLE_STATUSES:
+        return False
+
+    phone_source = (row.get("phone_source") or "").strip()
+    if phone_source == "ip_web_flow":
+        # For IP we bill the Telegram step if the bot returned a report link,
+        # even if the subsequent web parsing failed.
+        return True
+
+    return phone_lookup_status == "found"
+
+
+def is_successful_phone_request(row: dict[str, str | None]) -> bool:
+    return (row.get("summary_status") or "").strip() == "found"
+
+
+def count_successful_telegram_requests(results: list[dict[str, str | None]]) -> dict[str, int]:
+    successful_inn_requests = sum(1 for row in results if is_successful_inn_request(row))
+    successful_phone_requests = sum(1 for row in results if is_successful_phone_request(row))
+    return {
+        "successful_inn_requests": successful_inn_requests,
+        "successful_phone_requests": successful_phone_requests,
+        "successful_telegram_requests": successful_inn_requests + successful_phone_requests,
+    }
+
+
 def calculate_charge(
     client: dict[str, object],
     results: list[dict[str, str | None]],
 ) -> dict[str, object]:
     rows_total = len(results)
-    rows_successful = sum(1 for row in results if has_billable_data(row))
+    request_metrics = count_successful_telegram_requests(results)
+    successful_telegram_requests = request_metrics["successful_telegram_requests"]
     price = client["price_per_success_row"]
     if not isinstance(price, Decimal):
         raise RuntimeError("Client price_per_success_row must be Decimal")
-    amount_charged = price * rows_successful
+    amount_charged = price * successful_telegram_requests
     return {
         "rows_total": rows_total,
-        "rows_successful": rows_successful,
+        "rows_successful": successful_telegram_requests,
+        "successful_telegram_requests": successful_telegram_requests,
+        "successful_inn_requests": request_metrics["successful_inn_requests"],
+        "successful_phone_requests": request_metrics["successful_phone_requests"],
         "price_per_success_row": price,
         "amount_charged": amount_charged,
         "has_charge": amount_charged > 0,

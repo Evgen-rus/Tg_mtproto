@@ -259,20 +259,9 @@ def build_collection_metrics(rows: list[dict[str, str | None]]) -> list[tuple[st
 
 
 def build_query_metrics(rows: list[dict[str, str | None]]) -> list[tuple[str, int]]:
-    inn_queries = 0
-    phone_queries = 0
-
-    for row in rows:
-        entity_type = row.get("entity_type")
-        if entity_type == "phone":
-            phone_queries += 1
-            continue
-
-        if has_value(row.get("source_inn")):
-            inn_queries += 1
-            if has_value(row.get("found_phone")):
-                phone_queries += 1
-
+    metrics = client_registry.count_successful_telegram_requests(rows)
+    inn_queries = metrics["successful_inn_requests"]
+    phone_queries = metrics["successful_phone_requests"]
     return [
         ("По ИНН", inn_queries),
         ("По телефону", phone_queries),
@@ -295,7 +284,7 @@ def build_completion_report(rows: list[dict[str, str | None]]) -> tuple[str, str
         f"Строк: {len(rows)}\n\n"
         "Собрано:\n"
         f"{format_metric_lines(collection_metrics)}\n\n"
-        "Запросы к Telegram:\n"
+        "Успешные запросы к Telegram:\n"
         f"{format_metric_lines(query_metrics)}\n\n"
         "Статусы:\n"
         f"{format_metric_lines(status_metrics)}\n\n"
@@ -304,7 +293,7 @@ def build_completion_report(rows: list[dict[str, str | None]]) -> tuple[str, str
 
     short = (
         f"Строк: {len(rows)}\n"
-        f"Запросы: {query_metrics[-1][1]} "
+        f"Успешные Telegram-запросы: {query_metrics[-1][1]} "
         f"(ИНН {query_metrics[0][1]} / тел {query_metrics[1][1]})\n"
         f"Телефоны: {collection_metrics[0][1]}, ФИО: {collection_metrics[1][1]}, "
         f"Email: {collection_metrics[2][1]}, отчёты: {collection_metrics[-1][1]}"
@@ -329,8 +318,8 @@ def build_billing_report(
         detailed = (
             "Биллинг:\n"
             f"Клиент: {client['client_name']}\n"
-            f"Успешных строк: {charge['rows_successful']}\n"
-            f"Тариф: {price} {currency}\n"
+            f"Успешных Telegram-запросов: {charge['successful_telegram_requests']}\n"
+            f"Тариф за запрос: {price} {currency}\n"
             f"Ошибка списания: {error_message}"
         )
         short = f"Биллинг: ошибка ({error_message})"
@@ -339,13 +328,13 @@ def build_billing_report(
     detailed = (
         "Биллинг:\n"
         f"Клиент: {client['client_name']}\n"
-        f"Успешных строк: {charge['rows_successful']}\n"
-        f"Тариф: {price} {currency}\n"
+        f"Успешных Telegram-запросов: {charge['successful_telegram_requests']}\n"
+        f"Тариф за запрос: {price} {currency}\n"
         f"Списано: {client_registry.format_decimal(charge['amount_charged'])} {currency}\n"
         f"Остаток: {client_registry.format_decimal(balance_after)} {currency}"
     )
     short = (
-        f"Биллинг: {charge['rows_successful']} строк, "
+        f"Биллинг: {charge['successful_telegram_requests']} запросов, "
         f"списано {client_registry.format_decimal(charge['amount_charged'])} {currency}, "
         f"остаток {client_registry.format_decimal(balance_after)} {currency}"
     )
