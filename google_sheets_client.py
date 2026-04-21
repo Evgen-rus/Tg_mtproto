@@ -323,6 +323,19 @@ def update_row_values(
     )
 
 
+def clear_worksheet(service, spreadsheet_id: str, worksheet_title: str) -> None:
+    config = load_config()
+    execute_with_retries(
+        service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{worksheet_title}'",
+            body={},
+        ),
+        config,
+        operation="spreadsheets.values.clear",
+    )
+
+
 def ensure_worksheet_with_headers(
     service,
     spreadsheet_id: str,
@@ -331,6 +344,7 @@ def ensure_worksheet_with_headers(
     *,
     rows: int = 1000,
     cols: int | None = None,
+    rewrite_on_mismatch: bool = False,
 ) -> str:
     if not headers:
         raise ValueError("Headers are required")
@@ -354,6 +368,10 @@ def ensure_worksheet_with_headers(
 
     current_headers = [str(value).strip() for value in existing_values[0]]
     if current_headers != expected_headers:
+        if rewrite_on_mismatch:
+            clear_worksheet(service, spreadsheet_id, normalized_title)
+            write_rows(service, spreadsheet_id, normalized_title, [expected_headers])
+            return normalized_title
         raise RuntimeError(
             f"Worksheet {normalized_title!r} has unexpected headers. "
             f"Expected {expected_headers}, got {current_headers}"

@@ -306,37 +306,32 @@ def build_billing_report(
     charge: dict[str, object],
     *,
     billing_enabled: bool,
-    balance_after=None,
+    request_balance_after: int | None = None,
     error_message: str | None = None,
 ) -> tuple[str, str]:
     if not billing_enabled:
-        return "Биллинг:\nОтключен", "Биллинг: отключен"
+        return "Лимит запросов:\nОтключен", "Лимит запросов: отключен"
 
-    currency = str(client.get("currency") or "RUB")
-    price = client_registry.format_decimal(charge["price_per_success_row"])
     if error_message:
         detailed = (
-            "Биллинг:\n"
+            "Лимит запросов:\n"
             f"Клиент: {client['client_name']}\n"
             f"Успешных Telegram-запросов: {charge['successful_telegram_requests']}\n"
-            f"Тариф за запрос: {price} {currency}\n"
             f"Ошибка списания: {error_message}"
         )
-        short = f"Биллинг: ошибка ({error_message})"
+        short = f"Лимит запросов: ошибка ({error_message})"
         return detailed, short
 
     detailed = (
-        "Биллинг:\n"
+        "Лимит запросов:\n"
         f"Клиент: {client['client_name']}\n"
         f"Успешных Telegram-запросов: {charge['successful_telegram_requests']}\n"
-        f"Тариф за запрос: {price} {currency}\n"
-        f"Списано: {client_registry.format_decimal(charge['amount_charged'])} {currency}\n"
-        f"Остаток: {client_registry.format_decimal(balance_after)} {currency}"
+        f"Списано запросов: {charge['requests_charged']}\n"
+        f"Остаток запросов: {request_balance_after}"
     )
     short = (
-        f"Биллинг: {charge['successful_telegram_requests']} запросов, "
-        f"списано {client_registry.format_decimal(charge['amount_charged'])} {currency}, "
-        f"остаток {client_registry.format_decimal(balance_after)} {currency}"
+        f"Лимит: списано {charge['requests_charged']}, "
+        f"остаток {request_balance_after}"
     )
     return detailed, short
 
@@ -623,19 +618,24 @@ async def handle_document_message(
         )
         await download_file(token, document["file_id"], input_path)
         input_rows = run_pipeline.load_input_rows(input_path)
+        phone_rows = sum(
+            1
+            for item in input_rows
+            if run_pipeline.detect_entity_type(item.source_name) == "phone"
+        )
+        inn_rows = len(input_rows) - phone_rows
         max_possible_charge = client_registry.calculate_max_possible_charge(
-            client_config,
-            rows_total=len(input_rows),
+            phone_rows=phone_rows,
+            inn_rows=inn_rows,
         )
         if (
             not bool(client_config["allow_negative_balance"])
-            and max_possible_charge > client_config["balance"]
+            and max_possible_charge > int(client_config["request_balance"])
         ):
-            currency = str(client_config.get("currency") or "RUB")
             raise RuntimeError(
-                "Недостаточно баланса для безопасного запуска файла. "
-                f"Максимально возможное списание: {client_registry.format_decimal(max_possible_charge)} {currency}, "
-                f"остаток: {client_registry.format_decimal(client_config['balance'])} {currency}."
+                "Недостаточно баланса запросов для безопасного запуска файла. "
+                f"Максимально возможное списание: {max_possible_charge} запросов, "
+                f"остаток: {client_config['request_balance']}."
             )
         results = await process_input_file(
             client,
@@ -704,7 +704,7 @@ async def handle_document_message(
 
     charge = client_registry.calculate_charge(client_config, results)
     billing_error_message: str | None = None
-    balance_after = client_config["balance"]
+    request_balance_after = int(client_config["request_balance"])
     if billing_enabled:
         try:
             billing_result = await asyncio.to_thread(
@@ -737,7 +737,7 @@ async def handle_document_message(
             )
         else:
             client_config = billing_result["client"]
-            balance_after = billing_result["balance_after"]
+            request_balance_after = billing_result["request_balance_after"]
     else:
         await safe_registry_side_effect(
             client_registry.append_billing_log,
@@ -751,11 +751,12 @@ async def handle_document_message(
                 "file_name": file_name,
                 "message_id": "" if message_id is None else str(message_id),
                 "rows_total": str(charge["rows_total"]),
-                "rows_successful": str(charge["rows_successful"]),
-                "price_per_success_row": client_registry.format_decimal(charge["price_per_success_row"]),
-                "amount_charged": "0.00",
-                "balance_before": client_registry.format_decimal(client_config["balance"]),
-                "balance_after": client_registry.format_decimal(client_config["balance"]),
+                "successful_telegram_requests": str(charge["successful_telegram_requests"]),
+                "successful_inn_requests": str(charge["successful_inn_requests"]),
+                "successful_phone_requests": str(charge["successful_phone_requests"]),
+                "requests_charged": "0",
+                "request_balance_before": str(client_config["request_balance"]),
+                "request_balance_after": str(client_config["request_balance"]),
                 "status": "billing_disabled",
                 "result_worksheet_title": worksheet_title or "",
                 "comment": google_sheets_status,
@@ -767,7 +768,7 @@ async def handle_document_message(
         client_config,
         charge,
         billing_enabled=billing_enabled,
-        balance_after=balance_after,
+        request_balance_after=request_balance_after,
         error_message=billing_error_message,
     )
 
@@ -791,9 +792,9 @@ async def handle_document_message(
         file_name=file_name,
         status="completed" if billing_error_message is None else "completed_with_billing_error",
         details=(
-            f"Успешных строк: {charge['rows_successful']}; "
+            f"Успешных Telegram-запросов: {charge['successful_telegram_requests']}; "
             f"Google Sheets: {google_sheets_status}; "
-            f"Биллинг: {short_billing_report}"
+            f"Лимит: {short_billing_report}"
         ),
         operation="append_audit_log.processing_completed",
     )

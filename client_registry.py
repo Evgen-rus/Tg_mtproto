@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import google_sheets_client
 
@@ -10,10 +8,7 @@ CLIENTS_HEADERS = [
     "chat_id",
     "client_name",
     "is_active",
-    "tariff_name",
-    "price_per_success_row",
-    "balance",
-    "currency",
+    "request_balance",
     "allow_negative_balance",
     "created_at",
     "updated_at",
@@ -27,11 +22,12 @@ BILLING_LOG_HEADERS = [
     "file_name",
     "message_id",
     "rows_total",
-    "rows_successful",
-    "price_per_success_row",
-    "amount_charged",
-    "balance_before",
-    "balance_after",
+    "successful_telegram_requests",
+    "successful_inn_requests",
+    "successful_phone_requests",
+    "requests_charged",
+    "request_balance_before",
+    "request_balance_after",
     "status",
     "result_worksheet_title",
     "comment",
@@ -47,14 +43,6 @@ AUDIT_LOG_HEADERS = [
     "details",
 ]
 
-BILLABLE_RESULT_FIELDS = (
-    "found_phone",
-    "summary_fio",
-    "summary_email",
-    "summary_telegram",
-    "site_url",
-)
-
 INN_REQUEST_NON_BILLABLE_STATUSES = {
     "",
     "input_error",
@@ -69,16 +57,10 @@ def now_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def get_bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
+def parse_int(value: str | int | None, default: int = 0) -> int:
+    if value in (None, ""):
         return default
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def format_decimal(value: Decimal) -> str:
-    normalized = value.quantize(Decimal("0.01"))
-    return format(normalized, "f")
+    return int(str(value).strip())
 
 
 def ensure_registry_sheets(service, config: google_sheets_client.GoogleSheetsConfig) -> None:
@@ -88,6 +70,7 @@ def ensure_registry_sheets(service, config: google_sheets_client.GoogleSheetsCon
         config.clients_sheet_name,
         CLIENTS_HEADERS,
         rows=200,
+        rewrite_on_mismatch=True,
     )
     google_sheets_client.ensure_worksheet_with_headers(
         service,
@@ -95,6 +78,7 @@ def ensure_registry_sheets(service, config: google_sheets_client.GoogleSheetsCon
         config.billing_log_sheet_name,
         BILLING_LOG_HEADERS,
         rows=1000,
+        rewrite_on_mismatch=True,
     )
     google_sheets_client.ensure_worksheet_with_headers(
         service,
@@ -102,6 +86,7 @@ def ensure_registry_sheets(service, config: google_sheets_client.GoogleSheetsCon
         config.audit_log_sheet_name,
         AUDIT_LOG_HEADERS,
         rows=1000,
+        rewrite_on_mismatch=True,
     )
 
 
@@ -111,21 +96,14 @@ def build_client_record(row: google_sheets_client.WorksheetRow) -> dict[str, obj
     if not chat_id:
         raise RuntimeError(f"Empty chat_id in clients row {row.row_number}")
 
-    price = google_sheets_client.normalize_decimal(values.get("price_per_success_row"), Decimal("0"))
-    balance = google_sheets_client.normalize_decimal(values.get("balance"), Decimal("0"))
     client_name = str(values.get("client_name", "")).strip() or f"chat_{chat_id}"
-    currency = str(values.get("currency", "")).strip() or "RUB"
-
     return {
         "row_number": row.row_number,
         "raw_values": values,
         "chat_id": chat_id,
         "client_name": client_name,
         "is_active": google_sheets_client.normalize_bool(values.get("is_active"), default=False),
-        "tariff_name": str(values.get("tariff_name", "")).strip(),
-        "price_per_success_row": price,
-        "balance": balance,
-        "currency": currency,
+        "request_balance": parse_int(values.get("request_balance"), 0),
         "allow_negative_balance": google_sheets_client.normalize_bool(
             values.get("allow_negative_balance"),
             default=False,
@@ -175,17 +153,15 @@ def validate_client_access(
             "client": client,
         }
 
-    price = client["price_per_success_row"]
-    balance = client["balance"]
+    request_balance = int(client["request_balance"])
     allow_negative = bool(client["allow_negative_balance"])
-    if not allow_negative and isinstance(price, Decimal) and isinstance(balance, Decimal) and price > balance:
+    if not allow_negative and request_balance < 1:
         return {
             "ok": False,
             "status": "insufficient_balance",
             "message": (
-                "Недостаточно баланса для запуска обработки. "
-                f"Тариф за успешную строку: {format_decimal(price)} {client['currency']}, "
-                f"остаток: {format_decimal(balance)} {client['currency']}."
+                "Недостаточно баланса запросов для запуска обработки. "
+                f"Остаток запросов: {request_balance}."
             ),
             "client": client,
         }
@@ -196,14 +172,6 @@ def validate_client_access(
         "message": "",
         "client": client,
     }
-
-
-def has_billable_data(row: dict[str, str | None]) -> bool:
-    for field in BILLABLE_RESULT_FIELDS:
-        value = row.get(field)
-        if value is not None and str(value).strip():
-            return True
-    return False
 
 
 def is_successful_inn_request(row: dict[str, str | None]) -> bool:
@@ -244,42 +212,30 @@ def calculate_charge(
     rows_total = len(results)
     request_metrics = count_successful_telegram_requests(results)
     successful_telegram_requests = request_metrics["successful_telegram_requests"]
-    price = client["price_per_success_row"]
-    if not isinstance(price, Decimal):
-        raise RuntimeError("Client price_per_success_row must be Decimal")
-    amount_charged = price * successful_telegram_requests
     return {
         "rows_total": rows_total,
-        "rows_successful": successful_telegram_requests,
         "successful_telegram_requests": successful_telegram_requests,
         "successful_inn_requests": request_metrics["successful_inn_requests"],
         "successful_phone_requests": request_metrics["successful_phone_requests"],
-        "price_per_success_row": price,
-        "amount_charged": amount_charged,
-        "has_charge": amount_charged > 0,
+        "requests_charged": successful_telegram_requests,
+        "has_charge": successful_telegram_requests > 0,
     }
 
 
 def calculate_max_possible_charge(
-    client: dict[str, object],
     *,
-    rows_total: int,
-) -> Decimal:
-    price = client["price_per_success_row"]
-    if not isinstance(price, Decimal):
-        raise RuntimeError("Client price_per_success_row must be Decimal")
-    return price * rows_total
+    phone_rows: int,
+    inn_rows: int,
+) -> int:
+    return phone_rows + (inn_rows * 2)
 
 
-def build_client_sheet_row(client: dict[str, object], *, balance: Decimal) -> dict[str, str]:
+def build_client_sheet_row(client: dict[str, object], *, request_balance: int) -> dict[str, str]:
     raw_values = dict(client["raw_values"])
     raw_values["chat_id"] = str(client["chat_id"])
     raw_values["client_name"] = str(client["client_name"])
     raw_values["is_active"] = "true" if bool(client["is_active"]) else "false"
-    raw_values["tariff_name"] = str(client["tariff_name"])
-    raw_values["price_per_success_row"] = format_decimal(client["price_per_success_row"])
-    raw_values["balance"] = format_decimal(balance)
-    raw_values["currency"] = str(client["currency"])
+    raw_values["request_balance"] = str(request_balance)
     raw_values["allow_negative_balance"] = "true" if bool(client["allow_negative_balance"]) else "false"
     raw_values["created_at"] = str(client["created_at"])
     raw_values["updated_at"] = now_timestamp()
@@ -290,7 +246,7 @@ def build_client_sheet_row(client: dict[str, object], *, balance: Decimal) -> di
 def append_billing_log(
     service,
     config: google_sheets_client.GoogleSheetsConfig,
-    entry: dict[str, str | int | Decimal | None],
+    entry: dict[str, str | int | None],
 ) -> None:
     google_sheets_client.append_dict_row(
         service,
@@ -341,13 +297,10 @@ def apply_charge(
     comment: str,
     status: str,
 ) -> dict[str, object]:
-    balance_before = client["balance"]
-    amount_charged = charge["amount_charged"]
-    if not isinstance(balance_before, Decimal) or not isinstance(amount_charged, Decimal):
-        raise RuntimeError("Balance and amount_charged must be Decimal values")
-
-    balance_after = balance_before - amount_charged
-    updated_row = build_client_sheet_row(client, balance=balance_after)
+    request_balance_before = int(client["request_balance"])
+    requests_charged = int(charge["requests_charged"])
+    request_balance_after = request_balance_before - requests_charged
+    updated_row = build_client_sheet_row(client, request_balance=request_balance_after)
     google_sheets_client.update_dict_row(
         service,
         config.spreadsheet_id,
@@ -367,11 +320,12 @@ def apply_charge(
             "file_name": file_name,
             "message_id": "" if message_id is None else str(message_id),
             "rows_total": str(charge["rows_total"]),
-            "rows_successful": str(charge["rows_successful"]),
-            "price_per_success_row": format_decimal(charge["price_per_success_row"]),
-            "amount_charged": format_decimal(amount_charged),
-            "balance_before": format_decimal(balance_before),
-            "balance_after": format_decimal(balance_after),
+            "successful_telegram_requests": str(charge["successful_telegram_requests"]),
+            "successful_inn_requests": str(charge["successful_inn_requests"]),
+            "successful_phone_requests": str(charge["successful_phone_requests"]),
+            "requests_charged": str(requests_charged),
+            "request_balance_before": str(request_balance_before),
+            "request_balance_after": str(request_balance_after),
             "status": status,
             "result_worksheet_title": result_worksheet_title or "",
             "comment": comment,
@@ -379,13 +333,13 @@ def apply_charge(
     )
 
     updated_client = dict(client)
-    updated_client["balance"] = balance_after
+    updated_client["request_balance"] = request_balance_after
     updated_client["updated_at"] = updated_row["updated_at"]
     return {
         "client": updated_client,
-        "balance_before": balance_before,
-        "balance_after": balance_after,
-        "amount_charged": amount_charged,
+        "request_balance_before": request_balance_before,
+        "request_balance_after": request_balance_after,
+        "requests_charged": requests_charged,
     }
 
 
@@ -410,22 +364,19 @@ def log_blocked_attempt(
             "file_name": file_name,
             "message_id": "" if message_id is None else str(message_id),
             "rows_total": "0",
-            "rows_successful": "0",
-            "price_per_success_row": (
-                "0.00"
+            "successful_telegram_requests": "0",
+            "successful_inn_requests": "0",
+            "successful_phone_requests": "0",
+            "requests_charged": "0",
+            "request_balance_before": (
+                "0"
                 if client is None
-                else format_decimal(client["price_per_success_row"])
+                else str(client["request_balance"])
             ),
-            "amount_charged": "0.00",
-            "balance_before": (
-                "0.00"
+            "request_balance_after": (
+                "0"
                 if client is None
-                else format_decimal(client["balance"])
-            ),
-            "balance_after": (
-                "0.00"
-                if client is None
-                else format_decimal(client["balance"])
+                else str(client["request_balance"])
             ),
             "status": status,
             "result_worksheet_title": "",
