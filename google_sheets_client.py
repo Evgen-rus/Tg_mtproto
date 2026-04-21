@@ -3,6 +3,7 @@ import os
 import random
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -26,6 +27,9 @@ RETRYABLE_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 class GoogleSheetsConfig:
     credentials_file: Path
     spreadsheet_id: str
+    clients_sheet_name: str
+    billing_log_sheet_name: str
+    audit_log_sheet_name: str
     retry_attempts: int
     retry_base_delay_seconds: float
     retry_max_delay_seconds: float
@@ -36,6 +40,12 @@ class SpreadsheetInfo:
     spreadsheet_id: str
     title: str
     worksheet_titles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorksheetRow:
+    row_number: int
+    values: dict[str, str]
 
 
 def setup_logging() -> logging.Logger:
@@ -78,6 +88,9 @@ def load_config() -> GoogleSheetsConfig:
     return GoogleSheetsConfig(
         credentials_file=credentials_file,
         spreadsheet_id=spreadsheet_id,
+        clients_sheet_name=os.getenv("GOOGLE_CLIENTS_SHEET_NAME", "clients").strip() or "clients",
+        billing_log_sheet_name=os.getenv("GOOGLE_BILLING_LOG_SHEET_NAME", "billing_log").strip() or "billing_log",
+        audit_log_sheet_name=os.getenv("GOOGLE_AUDIT_LOG_SHEET_NAME", "bot_audit").strip() or "bot_audit",
         retry_attempts=get_int_env("GOOGLE_SHEETS_RETRY_ATTEMPTS", 5),
         retry_base_delay_seconds=get_float_env("GOOGLE_SHEETS_RETRY_BASE_DELAY_SECONDS", 1.0),
         retry_max_delay_seconds=get_float_env("GOOGLE_SHEETS_RETRY_MAX_DELAY_SECONDS", 20.0),
@@ -186,6 +199,198 @@ def make_unique_worksheet_title(existing_titles: Sequence[str], base_title: str)
         if candidate not in existing:
             return candidate
         suffix += 1
+
+
+def column_number_to_letter(index: int) -> str:
+    if index < 1:
+        raise ValueError("Column index must be >= 1")
+
+    letters: list[str] = []
+    current = index
+    while current > 0:
+        current, remainder = divmod(current - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "".join(reversed(letters))
+
+
+def normalize_bool(value: str | bool | None, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_decimal(value: str | int | float | Decimal | None, default: Decimal | None = None) -> Decimal:
+    if value in (None, ""):
+        if default is not None:
+            return default
+        raise ValueError("Decimal value is required")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        if default is not None:
+            return default
+        raise ValueError(f"Invalid decimal value: {value}") from exc
+
+
+def get_sheet_values(service, spreadsheet_id: str, worksheet_title: str) -> list[list[str]]:
+    config = load_config()
+    response = execute_with_retries(
+        service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{worksheet_title}'",
+        ),
+        config,
+        operation="spreadsheets.values.get",
+    )
+    values = response.get("values", [])
+    return [
+        ["" if value is None else str(value) for value in row]
+        for row in values
+    ]
+
+
+def read_table_rows(service, spreadsheet_id: str, worksheet_title: str) -> tuple[list[str], list[WorksheetRow]]:
+    values = get_sheet_values(service, spreadsheet_id, worksheet_title)
+    if not values:
+        return [], []
+
+    headers = [str(value).strip() for value in values[0]]
+    rows: list[WorksheetRow] = []
+    header_count = len(headers)
+    for row_index, row_values in enumerate(values[1:], start=2):
+        padded = list(row_values) + [""] * max(0, header_count - len(row_values))
+        row_dict = {
+            header: padded[position] if position < len(padded) else ""
+            for position, header in enumerate(headers)
+            if header
+        }
+        if not any(value.strip() for value in row_dict.values()):
+            continue
+        rows.append(WorksheetRow(row_number=row_index, values=row_dict))
+    return headers, rows
+
+
+def append_rows(service, spreadsheet_id: str, worksheet_title: str, rows: Iterable[Sequence[str | None]]) -> None:
+    config = load_config()
+    normalized_rows = [
+        ["" if value is None else str(value) for value in row]
+        for row in rows
+    ]
+    if not normalized_rows:
+        return
+
+    execute_with_retries(
+        service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{worksheet_title}'!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": normalized_rows},
+        ),
+        config,
+        operation="spreadsheets.values.append",
+    )
+
+
+def update_row_values(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str,
+    row_number: int,
+    values: Sequence[str | None],
+) -> None:
+    config = load_config()
+    if row_number < 1:
+        raise ValueError("Row number must be >= 1")
+    if not values:
+        return
+
+    end_column = column_number_to_letter(len(values))
+    normalized_values = [["" if value is None else str(value) for value in values]]
+    execute_with_retries(
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{worksheet_title}'!A{row_number}:{end_column}{row_number}",
+            valueInputOption="RAW",
+            body={"values": normalized_values},
+        ),
+        config,
+        operation="spreadsheets.values.update.row",
+    )
+
+
+def ensure_worksheet_with_headers(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str,
+    headers: Sequence[str],
+    *,
+    rows: int = 1000,
+    cols: int | None = None,
+) -> str:
+    if not headers:
+        raise ValueError("Headers are required")
+
+    info = get_spreadsheet_info(service, spreadsheet_id)
+    normalized_title = sanitize_worksheet_title(worksheet_title)
+    if normalized_title not in info.worksheet_titles:
+        create_worksheet(
+            service,
+            spreadsheet_id,
+            normalized_title,
+            rows=rows,
+            cols=cols or len(headers),
+        )
+
+    existing_values = get_sheet_values(service, spreadsheet_id, normalized_title)
+    expected_headers = [str(header) for header in headers]
+    if not existing_values:
+        write_rows(service, spreadsheet_id, normalized_title, [expected_headers])
+        return normalized_title
+
+    current_headers = [str(value).strip() for value in existing_values[0]]
+    if current_headers != expected_headers:
+        raise RuntimeError(
+            f"Worksheet {normalized_title!r} has unexpected headers. "
+            f"Expected {expected_headers}, got {current_headers}"
+        )
+    return normalized_title
+
+
+def append_dict_row(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str,
+    headers: Sequence[str],
+    row: dict[str, str | int | float | Decimal | None],
+) -> None:
+    append_rows(
+        service,
+        spreadsheet_id,
+        worksheet_title,
+        [[row.get(header) for header in headers]],
+    )
+
+
+def update_dict_row(
+    service,
+    spreadsheet_id: str,
+    worksheet_title: str,
+    row_number: int,
+    headers: Sequence[str],
+    row: dict[str, str | int | float | Decimal | None],
+) -> None:
+    update_row_values(
+        service,
+        spreadsheet_id,
+        worksheet_title,
+        row_number,
+        [row.get(header) for header in headers],
+    )
 
 
 def create_worksheet(service, spreadsheet_id: str, title: str, *, rows: int = 1000, cols: int = 26) -> str:

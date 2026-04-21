@@ -13,6 +13,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from telethon import TelegramClient
 
+import client_registry
 import google_sheets_client
 import run_pipeline
 from telethon_client_factory import build_telegram_client, open_url
@@ -151,6 +152,20 @@ def build_google_worksheet_title(file_name: str) -> str:
     stem = sanitize_stem(Path(file_name).stem)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     return f"{stem}_{timestamp}"
+
+
+async def safe_registry_side_effect(
+    func,
+    log: logging.Logger,
+    *args,
+    operation: str,
+    **kwargs,
+):
+    try:
+        return await asyncio.to_thread(func, *args, **kwargs)
+    except Exception:
+        log.exception("Registry operation failed: %s", operation)
+        return None
 
 
 async def send_message(token: str, chat_id: int, text: str, reply_to_message_id: int | None = None) -> dict:
@@ -297,6 +312,46 @@ def build_completion_report(rows: list[dict[str, str | None]]) -> tuple[str, str
     return detailed, short
 
 
+def build_billing_report(
+    client: dict[str, object],
+    charge: dict[str, object],
+    *,
+    billing_enabled: bool,
+    balance_after=None,
+    error_message: str | None = None,
+) -> tuple[str, str]:
+    if not billing_enabled:
+        return "Биллинг:\nОтключен", "Биллинг: отключен"
+
+    currency = str(client.get("currency") or "RUB")
+    price = client_registry.format_decimal(charge["price_per_success_row"])
+    if error_message:
+        detailed = (
+            "Биллинг:\n"
+            f"Клиент: {client['client_name']}\n"
+            f"Успешных строк: {charge['rows_successful']}\n"
+            f"Тариф: {price} {currency}\n"
+            f"Ошибка списания: {error_message}"
+        )
+        short = f"Биллинг: ошибка ({error_message})"
+        return detailed, short
+
+    detailed = (
+        "Биллинг:\n"
+        f"Клиент: {client['client_name']}\n"
+        f"Успешных строк: {charge['rows_successful']}\n"
+        f"Тариф: {price} {currency}\n"
+        f"Списано: {client_registry.format_decimal(charge['amount_charged'])} {currency}\n"
+        f"Остаток: {client_registry.format_decimal(balance_after)} {currency}"
+    )
+    short = (
+        f"Биллинг: {charge['rows_successful']} строк, "
+        f"списано {client_registry.format_decimal(charge['amount_charged'])} {currency}, "
+        f"остаток {client_registry.format_decimal(balance_after)} {currency}"
+    )
+    return detailed, short
+
+
 def export_results_to_google_sheets(file_name: str, rows: list[dict[str, str | None]], log: logging.Logger) -> str:
     config = google_sheets_client.load_config()
     service = google_sheets_client.build_sheets_service(config)
@@ -327,6 +382,7 @@ async def process_input_file(
     client: TelegramClient,
     bot_entity,
     *,
+    input_rows: list[run_pipeline.InputRow],
     input_path: Path,
     output_csv: Path,
     output_xlsx: Path,
@@ -340,7 +396,7 @@ async def process_input_file(
     row_delay_seconds: int,
     bot_message_echo: bool,
 ) -> list[dict[str, str | None]]:
-    rows = run_pipeline.load_input_rows(input_path)
+    rows = input_rows
     if not rows:
         raise RuntimeError("Во входном файле нет строк для обработки")
 
@@ -408,6 +464,10 @@ async def handle_document_message(
     chat_id: int,
     message: dict,
     jobs_dir: Path,
+    sheets_config: google_sheets_client.GoogleSheetsConfig,
+    registry_service,
+    google_sheets_enabled: bool,
+    billing_enabled: bool,
     headless: bool,
     debug_dir: Path,
     step_delay_seconds: int,
@@ -417,24 +477,127 @@ async def handle_document_message(
 ) -> None:
     document = message.get("document") or {}
     file_name = document.get("file_name") or "input.xlsx"
-    if not is_supported_filename(file_name):
+    message_id = message.get("message_id")
+    unregistered_chat_mode = os.getenv("UNREGISTERED_CHAT_MODE", "reject").strip().lower() or "reject"
+
+    try:
+        access = await asyncio.to_thread(
+            client_registry.validate_client_access,
+            registry_service,
+            sheets_config,
+            chat_id,
+        )
+    except Exception as exc:
+        log.exception("Failed to validate client access")
         await send_message(
             token,
             chat_id,
-            "Поддерживаются только файлы .xlsx, .xlsm и .csv",
-            reply_to_message_id=message.get("message_id"),
+            f"Не удалось проверить настройки клиента:\n{exc}",
+            reply_to_message_id=message_id,
+        )
+        return
+
+    client_config = access.get("client")
+    if not access["ok"]:
+        details = str(access["message"])
+        if access["status"] == "unregistered" and unregistered_chat_mode != "reject":
+            log.info("Ignoring unregistered chat %s due to UNREGISTERED_CHAT_MODE=%s", chat_id, unregistered_chat_mode)
+            return
+        await safe_registry_side_effect(
+            client_registry.log_blocked_attempt,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            file_name=file_name,
+            status=str(access["status"]),
+            comment=details,
+            client=client_config,
+            operation="log_blocked_attempt",
+        )
+        await safe_registry_side_effect(
+            client_registry.append_audit_log,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            event_type="document_rejected",
+            file_name=file_name,
+            status=str(access["status"]),
+            details=details,
+            operation="append_audit_log.document_rejected",
+        )
+        await send_message(
+            token,
+            chat_id,
+            details,
+            reply_to_message_id=message_id,
+        )
+        return
+
+    assert client_config is not None
+    await safe_registry_side_effect(
+        client_registry.append_audit_log,
+        log,
+        registry_service,
+        sheets_config,
+        chat_id=chat_id,
+        message_id=message_id,
+        event_type="document_received",
+        file_name=file_name,
+        status="accepted",
+        details=f"Клиент: {client_config['client_name']}",
+        operation="append_audit_log.document_received",
+    )
+
+    if not is_supported_filename(file_name):
+        message_text = "Поддерживаются только файлы .xlsx, .xlsm и .csv"
+        await safe_registry_side_effect(
+            client_registry.log_blocked_attempt,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            file_name=file_name,
+            status="unsupported_file",
+            comment=message_text,
+            client=client_config,
+            operation="log_blocked_attempt.unsupported_file",
+        )
+        await send_message(
+            token,
+            chat_id,
+            message_text,
+            reply_to_message_id=message_id,
         )
         return
 
     if is_template_filename(file_name):
+        message_text = (
+            "Этот файл выглядит как шаблон и не запускается в обработку. "
+            "Переименуйте файл и отправьте его заново, если хотите начать поиск."
+        )
+        await safe_registry_side_effect(
+            client_registry.log_blocked_attempt,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            file_name=file_name,
+            status="template_file",
+            comment=message_text,
+            client=client_config,
+            operation="log_blocked_attempt.template_file",
+        )
         await send_message(
             token,
             chat_id,
-            (
-                "Этот файл выглядит как шаблон и не запускается в обработку. "
-                "Переименуйте файл и отправьте его заново, если хотите начать поиск."
-            ),
-            reply_to_message_id=message.get("message_id"),
+            message_text,
+            reply_to_message_id=message_id,
         )
         return
 
@@ -451,15 +614,44 @@ async def handle_document_message(
         token,
         chat_id,
         f"Файл {file_name} принят. Скачиваю и готовлю обработку...",
-        reply_to_message_id=message.get("message_id"),
+        reply_to_message_id=message_id,
     )
     status_message_id = status["result"]["message_id"]
 
     try:
+        await safe_registry_side_effect(
+            client_registry.append_audit_log,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            event_type="processing_started",
+            file_name=file_name,
+            status="started",
+            details=f"Клиент: {client_config['client_name']}",
+            operation="append_audit_log.processing_started",
+        )
         await download_file(token, document["file_id"], input_path)
+        input_rows = run_pipeline.load_input_rows(input_path)
+        max_possible_charge = client_registry.calculate_max_possible_charge(
+            client_config,
+            rows_total=len(input_rows),
+        )
+        if (
+            not bool(client_config["allow_negative_balance"])
+            and max_possible_charge > client_config["balance"]
+        ):
+            currency = str(client_config.get("currency") or "RUB")
+            raise RuntimeError(
+                "Недостаточно баланса для безопасного запуска файла. "
+                f"Максимально возможное списание: {client_registry.format_decimal(max_possible_charge)} {currency}, "
+                f"остаток: {client_registry.format_decimal(client_config['balance'])} {currency}."
+            )
         results = await process_input_file(
             client,
             bot_entity,
+            input_rows=input_rows,
             input_path=input_path,
             output_csv=output_csv,
             output_xlsx=output_xlsx,
@@ -475,6 +667,32 @@ async def handle_document_message(
         )
     except Exception as exc:
         log.exception("File processing failed")
+        await safe_registry_side_effect(
+            client_registry.log_blocked_attempt,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            file_name=file_name,
+            status="processing_failed",
+            comment=str(exc),
+            client=client_config,
+            operation="log_blocked_attempt.processing_failed",
+        )
+        await safe_registry_side_effect(
+            client_registry.append_audit_log,
+            log,
+            registry_service,
+            sheets_config,
+            chat_id=chat_id,
+            message_id=message_id,
+            event_type="processing_finished",
+            file_name=file_name,
+            status="failed",
+            details=str(exc),
+            operation="append_audit_log.processing_failed",
+        )
         await safe_edit_message(
             token,
             chat_id,
@@ -484,8 +702,8 @@ async def handle_document_message(
         )
         return
 
-    google_sheets_enabled = get_bool_env("GOOGLE_SHEETS_EXPORT_ENABLED", True)
     google_sheets_status = "Google Sheets: отключено"
+    worksheet_title: str | None = None
     if google_sheets_enabled:
         try:
             worksheet_title = await asyncio.to_thread(export_results_to_google_sheets, file_name, results, log)
@@ -495,23 +713,115 @@ async def handle_document_message(
         else:
             google_sheets_status = f"Google Sheets: лист {worksheet_title}"
 
+    charge = client_registry.calculate_charge(client_config, results)
+    billing_error_message: str | None = None
+    balance_after = client_config["balance"]
+    if billing_enabled:
+        try:
+            billing_result = await asyncio.to_thread(
+                client_registry.apply_charge,
+                registry_service,
+                sheets_config,
+                client_config,
+                charge,
+                file_name=file_name,
+                message_id=message_id,
+                result_worksheet_title=worksheet_title,
+                comment=google_sheets_status,
+                status="charged" if charge["has_charge"] else "charged_zero",
+            )
+        except Exception as exc:
+            log.exception("Billing update failed")
+            billing_error_message = str(exc)
+            await safe_registry_side_effect(
+                client_registry.append_audit_log,
+                log,
+                registry_service,
+                sheets_config,
+                chat_id=chat_id,
+                message_id=message_id,
+                event_type="billing",
+                file_name=file_name,
+                status="failed",
+                details=billing_error_message,
+                operation="append_audit_log.billing_failed",
+            )
+        else:
+            client_config = billing_result["client"]
+            balance_after = billing_result["balance_after"]
+    else:
+        await safe_registry_side_effect(
+            client_registry.append_billing_log,
+            log,
+            registry_service,
+            sheets_config,
+            {
+                "created_at": client_registry.now_timestamp(),
+                "chat_id": str(client_config["chat_id"]),
+                "client_name": str(client_config["client_name"]),
+                "file_name": file_name,
+                "message_id": "" if message_id is None else str(message_id),
+                "rows_total": str(charge["rows_total"]),
+                "rows_successful": str(charge["rows_successful"]),
+                "price_per_success_row": client_registry.format_decimal(charge["price_per_success_row"]),
+                "amount_charged": "0.00",
+                "balance_before": client_registry.format_decimal(client_config["balance"]),
+                "balance_after": client_registry.format_decimal(client_config["balance"]),
+                "status": "billing_disabled",
+                "result_worksheet_title": worksheet_title or "",
+                "comment": google_sheets_status,
+            },
+            operation="append_billing_log.billing_disabled",
+        )
+
+    billing_report, short_billing_report = build_billing_report(
+        client_config,
+        charge,
+        billing_enabled=billing_enabled,
+        balance_after=balance_after,
+        error_message=billing_error_message,
+    )
+
     detailed_report, short_report = build_completion_report(results)
     await safe_edit_message(
         token,
         chat_id,
         status_message_id,
-        f"{detailed_report}\n\n{google_sheets_status}",
+        f"{detailed_report}\n\n{billing_report}\n\n{google_sheets_status}",
         log,
     )
 
-    caption = f"Готово: {file_name}\n{short_report}\n{google_sheets_status}"
+    await safe_registry_side_effect(
+        client_registry.append_audit_log,
+        log,
+        registry_service,
+        sheets_config,
+        chat_id=chat_id,
+        message_id=message_id,
+        event_type="processing_finished",
+        file_name=file_name,
+        status="completed" if billing_error_message is None else "completed_with_billing_error",
+        details=(
+            f"Успешных строк: {charge['rows_successful']}; "
+            f"Google Sheets: {google_sheets_status}; "
+            f"Биллинг: {short_billing_report}"
+        ),
+        operation="append_audit_log.processing_completed",
+    )
+
+    caption = (
+        f"Готово: {file_name}\n"
+        f"{short_report}\n"
+        f"{short_billing_report}\n"
+        f"{google_sheets_status}"
+    )
     try:
         await send_document(
             token,
             chat_id,
             output_xlsx,
             caption=caption,
-            reply_to_message_id=message.get("message_id"),
+            reply_to_message_id=message_id,
         )
         log.info("Result file sent to chat %s: %s", chat_id, output_xlsx)
     except Exception as exc:
@@ -545,10 +855,14 @@ async def bootstrap_offset(token: str, log: logging.Logger) -> int | None:
 async def main() -> None:
     log = setup_logging()
     token = get_required_env("TG_BOT_TOKEN")
-    target_chat_id = int(get_required_env("ID_TG_CHAT"))
     jobs_dir = Path(os.getenv("TG_BOT_JOBS_DIR", "tg_bot_jobs").strip() or "tg_bot_jobs")
+    google_sheets_enabled = get_bool_env("GOOGLE_SHEETS_EXPORT_ENABLED", True)
+    billing_enabled = get_bool_env("BILLING_ENABLED", True)
 
     api_id, api_hash, session_name, bot_username, headless, debug_dir, step_delay_seconds, row_delay_seconds, bot_message_echo = run_pipeline.load_runtime_config()
+    sheets_config = google_sheets_client.load_config()
+    registry_service = google_sheets_client.build_sheets_service(sheets_config)
+    await asyncio.to_thread(client_registry.ensure_registry_sheets, registry_service, sheets_config)
     client = build_telegram_client(session_name, api_id, api_hash)
 
     await client.connect()
@@ -596,7 +910,7 @@ async def main() -> None:
                 chat = message.get("chat") or {}
                 chat_id = chat.get("id")
                 message_id = message.get("message_id")
-                if chat_id != target_chat_id or message_id is None:
+                if chat_id is None or message_id is None:
                     continue
 
                 message_key = (chat_id, message_id)
@@ -615,6 +929,10 @@ async def main() -> None:
                     chat_id=chat_id,
                     message=message,
                     jobs_dir=jobs_dir,
+                    sheets_config=sheets_config,
+                    registry_service=registry_service,
+                    google_sheets_enabled=google_sheets_enabled,
+                    billing_enabled=billing_enabled,
                     headless=headless,
                     debug_dir=debug_dir,
                     step_delay_seconds=step_delay_seconds,

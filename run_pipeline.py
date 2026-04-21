@@ -224,10 +224,53 @@ def iter_rows_from_xlsx(path: Path) -> Iterable[InputRow]:
 def load_input_rows(path: Path) -> list[InputRow]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return list(iter_rows_from_csv(path))
+        rows = list(iter_rows_from_csv(path))
+        validate_input_rows(rows)
+        return rows
     if suffix in {".xlsx", ".xlsm"}:
-        return list(iter_rows_from_xlsx(path))
+        rows = list(iter_rows_from_xlsx(path))
+        validate_input_rows(rows)
+        return rows
     raise RuntimeError(f"Unsupported input file format: {path.suffix}")
+
+
+def detect_input_mode(rows: list[InputRow]) -> str:
+    if not rows:
+        raise RuntimeError("Во входном файле нет строк для обработки")
+
+    phone_rows: list[int] = []
+    inn_rows: list[int] = []
+    invalid_rows: list[int] = []
+
+    for item in rows:
+        if normalize_direct_phone(item.source_name):
+            phone_rows.append(item.source_row)
+            continue
+        if item.source_inn:
+            inn_rows.append(item.source_row)
+            continue
+        invalid_rows.append(item.source_row)
+
+    if invalid_rows:
+        preview = ", ".join(str(row_number) for row_number in invalid_rows[:5])
+        raise RuntimeError(
+            "Не удалось распознать формат входного файла. "
+            f"Проверьте строки: {preview}. Для поиска по телефону нужен формат 7XXXXXXXXXX "
+            "в первом столбце, для поиска по компании или ИП нужен ИНН во втором столбце."
+        )
+
+    if phone_rows and inn_rows:
+        raise RuntimeError(
+            "Смешанный формат входного файла не поддерживается. "
+            "Используйте либо список телефонов в первом столбце, либо таблицу "
+            "с названием и ИНН."
+        )
+
+    return "phone" if phone_rows else "inn"
+
+
+def validate_input_rows(rows: list[InputRow]) -> str:
+    return detect_input_mode(rows)
 
 
 def detect_entity_type(source_name: str) -> str:
