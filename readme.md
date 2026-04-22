@@ -403,3 +403,7 @@ python google_sheets_client.py
 - JSON должен быть файлом service account
 - таблицу нужно расшарить на email этого service account
 - при работе `tg_file_pipeline_bot.py` экспорт в Google Sheets не валит основную обработку: если экспорт не удался, `xlsx` всё равно отправится в Telegram
+
+# посмотреть статус на сервере
+
+systemctl status tg-mtproto.service
