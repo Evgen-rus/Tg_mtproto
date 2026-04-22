@@ -29,7 +29,7 @@
 
 ```bash
 pip install -r requirements.txt
-python -m playwright install
+python -m playwright install --with-deps chromium
 ```
 
 ## Настройка `.env`
